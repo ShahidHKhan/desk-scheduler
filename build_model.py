@@ -1,0 +1,162 @@
+"""
+Builds the CP-SAT model for the service desk schedule.
+
+See PHASE3_HANDOFF.md for the full design rationale (why per-slot
+binaries instead of interval variables, the min-block-length
+implementation approach, and what's still first-pass/unfinished in the
+objective function).
+"""
+
+from ortools.sat.python import cp_model
+
+from model_input import DAYS, NUM_SLOTS, OPERATING_SLOTS, ROLES, WEEKDAYS, WEEKEND_DAYS, SolverInput
+
+
+def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
+    model = cp_model.CpModel()
+    people = data.people
+
+    # --- Variables ---
+    # x[person_id, day, slot, role] = 1 if that person works that slot in that role
+    x = {}
+    for p in people:
+        for day in DAYS:
+            for slot in OPERATING_SLOTS[day]:
+                for role in ROLES:
+                    x[p.id, day, slot, role] = model.NewBoolVar(f"x_{p.id}_{day}_{slot}_{role}")
+
+    # work[person_id, day, slot] = 1 if working ANY role that slot
+    # (derived variable - a person can't be assistant AND tech in the same slot)
+    work = {}
+    for p in people:
+        for day in DAYS:
+            for slot in OPERATING_SLOTS[day]:
+                roles_here = [x[p.id, day, slot, r] for r in ROLES]
+                model.Add(sum(roles_here) <= 1)  # at most one role per slot
+                w = model.NewBoolVar(f"work_{p.id}_{day}_{slot}")
+                model.Add(w == sum(roles_here))
+                work[p.id, day, slot] = w
+
+    # --- Hard constraint: availability (Rule 3) ---
+    for p in people:
+        for day in DAYS:
+            for slot in OPERATING_SLOTS[day]:
+                if not p.is_available(day, slot):
+                    model.Add(work[p.id, day, slot] == 0)
+
+    # --- Hard constraint: capability boundary (Rule 2) ---
+    for p in people:
+        if not p.can_work_tech():
+            for day in DAYS:
+                for slot in OPERATING_SLOTS[day]:
+                    model.Add(x[p.id, day, slot, "tech"] == 0)
+
+    # --- Hard constraint: weekday coverage - exactly 2 assistant + 2 tech ---
+    for day in [d for d in DAYS if d in WEEKDAYS]:
+        for slot in OPERATING_SLOTS[day]:
+            assistants = [x[p.id, day, slot, "assistant"] for p in people]
+            techs = [x[p.id, day, slot, "tech"] for p in people]
+            model.Add(sum(assistants) == 2)
+            model.Add(sum(techs) == 2)
+
+    # --- Hard constraint: weekend coverage - exactly 1 tech-role person ---
+    for day in [d for d in DAYS if d in WEEKEND_DAYS]:
+        for slot in OPERATING_SLOTS[day]:
+            techs = [x[p.id, day, slot, "tech"] for p in people]
+            assistants = [x[p.id, day, slot, "assistant"] for p in people]
+            model.Add(sum(techs) == 1)
+            model.Add(sum(assistants) == 0)  # weekends are tech-only, no assistant role at all
+
+    # --- Hard constraint: hours ceiling (Rule 1) ---
+    # each slot = 0.5 hr, so sum of slots <= hours_requested * 2
+    for p in people:
+        total_slots = [work[p.id, day, slot] for day in DAYS for slot in OPERATING_SLOTS[day]]
+        model.Add(sum(total_slots) <= p.hours_requested * 2)
+
+    # --- Hard constraint: no two rating-1 people together on weekdays (Rule 4) ---
+    rating_1_people = [p for p in people if p.experience_rating == 1]
+    for day in [d for d in DAYS if d in WEEKDAYS]:
+        for slot in OPERATING_SLOTS[day]:
+            if len(rating_1_people) > 1:
+                model.Add(sum(work[p.id, day, slot] for p in rating_1_people) <= 1)
+
+    # --- Hard constraint: max block length 6 hrs = 12 slots (Rule 7) ---
+    # Sliding window: no 13 consecutive slots can all be worked by the same person.
+    for p in people:
+        for day in DAYS:
+            slots = list(OPERATING_SLOTS[day])
+            window = data.max_block_slots + 1
+            for i in range(len(slots) - window + 1):
+                window_slots = slots[i : i + window]
+                model.Add(sum(work[p.id, day, s] for s in window_slots) <= data.max_block_slots)
+
+    # --- Hard constraint: min block length 2 hrs = 4 slots (Rule 7) ---
+    # A block "starts" at slot s if work[s]=1 and work[s-1]=0 (or s is the
+    # first operating slot of the day). If a block starts, force the next
+    # min_block_slots consecutive slots to also be worked - UNLESS fewer
+    # than min_block_slots slots remain in the day's operating window, in
+    # which case a full-length block literally can't fit. That's the
+    # "trailing sliver" case (PHASE3_HANDOFF.md finding #2): allowed, not
+    # forbidden, but tracked in sliver_starts below so the objective can
+    # discourage it instead of silently accepting it for free.
+    sliver_starts = []
+    for p in people:
+        for day in DAYS:
+            slots = list(OPERATING_SLOTS[day])
+            for idx, s in enumerate(slots):
+                is_first = idx == 0
+                prev_s = None if is_first else slots[idx - 1]
+
+                start_var = model.NewBoolVar(f"start_{p.id}_{day}_{s}")
+                if is_first:
+                    model.Add(start_var == work[p.id, day, s])
+                else:
+                    # start_var == work[s] AND NOT work[prev_s]
+                    model.AddBoolAnd([work[p.id, day, s], work[p.id, day, prev_s].Not()]).OnlyEnforceIf(start_var)
+                    model.AddBoolOr([work[p.id, day, s].Not(), work[p.id, day, prev_s]]).OnlyEnforceIf(start_var.Not())
+
+                remaining = len(slots) - idx
+                if remaining >= data.min_block_slots:
+                    required_slots = slots[idx : idx + data.min_block_slots]
+                    for req_s in required_slots:
+                        model.AddImplication(start_var, work[p.id, day, req_s])
+                else:
+                    sliver_starts.append(start_var)
+
+    # --- Objective: minimize the worst-off person's shortfall ratio (Rule 6) ---
+    # Proportional fairness, first pass: minimize the maximum, across all
+    # people, of (hours_requested - hours_assigned) / hours_requested.
+    # Scaled to integers (CP-SAT requirement) as per-mille (0-1000).
+    # NOTE: role-weighting ratio targets and proximity tiebreaking (also
+    # Rule 5/Rule 2 soft components) are NOT yet in this objective - see
+    # PHASE3_HANDOFF.md for why and what's needed to add them.
+    max_shortfall_permille = model.NewIntVar(0, 1000, "max_shortfall_permille")
+    for p in people:
+        total_slots = [work[p.id, day, slot] for day in DAYS for slot in OPERATING_SLOTS[day]]
+        assigned_slots = sum(total_slots)  # linear expression, slots (0.5hr units)
+        requested_slots = p.hours_requested * 2
+        if requested_slots > 0:
+            # (requested - assigned) * 1000 <= max_shortfall_permille * requested
+            model.Add(
+                (requested_slots - assigned_slots) * 1000 <= max_shortfall_permille * requested_slots
+            )
+
+    # Soft penalty on trailing slivers (PHASE3_HANDOFF.md finding #2,
+    # option 3): each block that starts too close to closing to reach the
+    # full min_block_slots length adds SLIVER_PENALTY_WEIGHT to the
+    # objective. Deliberately small relative to max_shortfall_permille's
+    # 0-1000 range - hours fairness is the primary business rule, this is
+    # only meant to act as a tiebreaker between otherwise-equally-fair
+    # schedules, not override fairness to avoid a sliver. Uncalibrated
+    # placeholder, like MIN_POSITIONED_WORDS in pdf_parser.py - tune once
+    # there's a real schedule to see how often slivers actually occur.
+    SLIVER_PENALTY_WEIGHT = 10
+    model.Minimize(max_shortfall_permille + SLIVER_PENALTY_WEIGHT * sum(sliver_starts))
+
+    variables = {
+        "x": x,
+        "work": work,
+        "max_shortfall_permille": max_shortfall_permille,
+        "sliver_starts": sliver_starts,
+    }
+    return model, variables
