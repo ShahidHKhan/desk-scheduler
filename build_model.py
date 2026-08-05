@@ -25,6 +25,14 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
                 for role in ROLES:
                     x[p.id, day, slot, role] = model.NewBoolVar(f"x_{p.id}_{day}_{slot}_{role}")
 
+    # --- Hard constraint: manual locks always win (Phase 5) ---
+    # Locks are pre-validated by locks.validate_locks() before this point - not
+    # re-validated here, that's locks.py's job. A lock referencing a day/slot/role
+    # combo that isn't in `x` (i.e. outside operating hours) raises KeyError, which
+    # is intentional: a defensive check against a caller that skipped validation.
+    for lock in data.locked_assignments:
+        model.Add(x[lock.person_id, lock.day, lock.slot, lock.role] == (1 if lock.value else 0))
+
     # work[person_id, day, slot] = 1 if working ANY role that slot
     # (derived variable - a person can't be assistant AND tech in the same slot)
     work = {}

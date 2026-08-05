@@ -4,7 +4,7 @@ Shared state for the orchestration graph.
 
 from typing import TypedDict
 
-from model_input import Person
+from model_input import LockedAssignment, Person
 from schema import AvailabilitySubmission
 
 
@@ -22,12 +22,14 @@ class PipelineState(TypedDict, total=False):
     validation_errors: list[str]
 
     # --- solve stage ---
-    solve_status: str  # "OPTIMAL" | "FEASIBLE" | "INFEASIBLE" | "UNKNOWN"
+    solve_status: str  # "OPTIMAL" | "FEASIBLE" | "INFEASIBLE" | "UNKNOWN" | "LOCK_CONFLICT" | "SKIPPED"
     solve_result: dict | None
     infeasibility_gaps: list[str]
+    locked_assignments: list[LockedAssignment]
+    lock_conflicts: list[str]
 
     # --- human review stage ---
-    review_decision: str  # "approved" | "rejected" | "" (pending)
+    review_decision: str  # "approved" | "rejected" | "edit" | "" (pending)
     review_notes: str
 
     # --- output ---

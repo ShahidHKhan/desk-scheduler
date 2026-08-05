@@ -11,7 +11,8 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
-from model_input import SolverInput
+from locks import validate_locks
+from model_input import LockedAssignment, SolverInput
 from router import ingest
 from solve import solve as run_solver
 from state import PipelineState
@@ -59,19 +60,40 @@ def _join_roster_and_availability(state: PipelineState) -> SolverInput:
 
 def solve_node(state: PipelineState) -> dict:
     if state["validation_errors"]:
-        return {"solve_status": "SKIPPED", "infeasibility_gaps": state["validation_errors"]}
+        return {"solve_status": "SKIPPED", "infeasibility_gaps": state["validation_errors"], "lock_conflicts": []}
 
     data = _join_roster_and_availability(state)
+    data.locked_assignments = state.get("locked_assignments") or []
+
+    # Catch a contradictory manual edit before it ever reaches coverage
+    # diagnosis or the CP-SAT solve - a self-contradictory request shouldn't
+    # burn solve time or get lumped in with a generic coverage gap.
+    lock_conflicts = validate_locks(data)
+    if lock_conflicts:
+        return {"solve_status": "LOCK_CONFLICT", "lock_conflicts": lock_conflicts, "infeasibility_gaps": []}
 
     # solve() already runs diagnose_coverage_gaps() internally and short-circuits
     # before the CP-SAT build if there's an obvious headcount gap - no need to
     # duplicate that check here. Its result carries the specific gaps either way.
     result = run_solver(data, time_limit_seconds=30)
-    gaps = [] if result["feasible"] else (result["coverage_gaps"] or ["Solver could not find a feasible schedule."])
+    if result["feasible"]:
+        return {
+            "solve_status": result["status"],
+            "solve_result": result,
+            "infeasibility_gaps": [],
+            "lock_conflicts": [],
+        }
+
+    # Deliberately omit "solve_result" here rather than setting it to None:
+    # LangGraph's shallow merge then leaves whatever solve_result was already
+    # in state untouched. On a re-solve triggered by an edit, that's the last
+    # known-good schedule - _route_after_solve uses its presence to decide
+    # whether this failure has something to fall back to (loop back to
+    # human_review) or is a first-ever failure with nothing to show (explain).
     return {
         "solve_status": result["status"],
-        "solve_result": result if result["feasible"] else None,
-        "infeasibility_gaps": gaps,
+        "infeasibility_gaps": result["coverage_gaps"] or ["Solver could not find a feasible schedule."],
+        "lock_conflicts": [],
     }
 
 
@@ -79,20 +101,51 @@ def explain_node(state: PipelineState) -> dict:
     # Deterministic/template explanation for now. The notes doc (Section
     # 3) flags explain/repair as legitimate LLM territory - not wired up
     # yet, this is a plain formatted summary. See PHASE4_HANDOFF.md.
-    lines = ["Could not build a valid schedule. Gaps found:"]
-    lines.extend(f"  - {gap}" for gap in state["infeasibility_gaps"])
+    #
+    # Lock conflicts and coverage gaps are different failure modes (a bad
+    # manual edit vs. not enough staff) - the message needs to say which
+    # one actually happened, not lump them together.
+    lock_conflicts = state.get("lock_conflicts")
+    if lock_conflicts:
+        lines = ["Your manual edits conflict with a hard rule:"]
+        lines.extend(f"  - {c}" for c in lock_conflicts)
+    else:
+        lines = ["Could not build a valid schedule. Gaps found:"]
+        lines.extend(f"  - {gap}" for gap in state["infeasibility_gaps"])
     return {"final_schedule": None, "review_notes": "\n".join(lines)}
 
 
 def human_review_node(state: PipelineState) -> Command:
+    gaps = state.get("infeasibility_gaps") or []
+    conflicts = state.get("lock_conflicts") or []
+    # Reaching human_review with gaps/conflicts already set means this is a
+    # re-solve that failed (see _route_after_solve) - solve_result here is
+    # the last known-good schedule, not the result of this failed attempt.
+    # Say so explicitly rather than presenting it as if nothing went wrong.
+    message = (
+        "Your last edit could not be applied - still showing your last "
+        "approved-pending schedule. Try a different edit, or approve/reject "
+        "this one as-is."
+        if gaps or conflicts
+        else "Schedule ready for review."
+    )
+
     decision = interrupt(
         {
-            "message": "Schedule ready for review.",
+            "message": message,
             "solve_status": state["solve_status"],
             "hours_assigned": state["solve_result"]["hours_assigned"] if state["solve_result"] else {},
+            "infeasibility_gaps": gaps,
+            "lock_conflicts": conflicts,
         }
     )
-    return Command(update={"review_decision": decision.get("decision", "rejected")})
+    review_decision = decision.get("decision", "rejected")
+    update = {"review_decision": review_decision}
+    if review_decision == "edit":
+        update["locked_assignments"] = [
+            LockedAssignment(**raw_lock) for raw_lock in decision.get("locked_assignments", [])
+        ]
+    return Command(update=update)
 
 
 def output_node(state: PipelineState) -> dict:
@@ -102,11 +155,24 @@ def output_node(state: PipelineState) -> dict:
 
 
 def _route_after_solve(state: PipelineState) -> str:
-    return "explain" if state["infeasibility_gaps"] else "human_review"
+    if not (state["infeasibility_gaps"] or state.get("lock_conflicts")):
+        return "human_review"
+    # A failure is only terminal (-> explain -> END) when there's no prior
+    # schedule to fall back to. A failed re-solve during the edit loop (bad
+    # lock, or an edit that opens a coverage gap) still has solve_result from
+    # the last successful solve sitting in state - route back to human_review
+    # so the boss can see what went wrong and try again instead of the whole
+    # pipeline dead-ending.
+    return "human_review" if state.get("solve_result") is not None else "explain"
 
 
 def _route_after_review(state: PipelineState) -> str:
-    return "output" if state["review_decision"] == "approved" else "end"
+    decision = state["review_decision"]
+    if decision == "approved":
+        return "output"
+    if decision == "edit":
+        return "solve"
+    return "end"
 
 
 def build_graph(checkpointer):
@@ -123,7 +189,9 @@ def build_graph(checkpointer):
     graph.add_edge("validate", "solve")
     graph.add_conditional_edges("solve", _route_after_solve, {"explain": "explain", "human_review": "human_review"})
     graph.add_edge("explain", END)
-    graph.add_conditional_edges("human_review", _route_after_review, {"output": "output", "end": END})
+    graph.add_conditional_edges(
+        "human_review", _route_after_review, {"output": "output", "solve": "solve", "end": END}
+    )
     graph.add_edge("output", END)
 
     return graph.compile(checkpointer=checkpointer)
