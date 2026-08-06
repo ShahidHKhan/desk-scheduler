@@ -92,7 +92,9 @@ def roster_confirm_node(state: PipelineState) -> dict:
             person_id = candidates[idx].suggested_match_id
 
         submission = candidates[idx].submission
-        person = crud.upsert_from_submission(person_id, submission.name, submission.hours_requested)
+        person = crud.upsert_from_submission(
+            person_id, submission.name, submission.hours_requested, submission.availability
+        )
         submission_roster_ids[idx] = person.id
 
     return {"submission_roster_ids": submission_roster_ids}
@@ -143,6 +145,14 @@ def _build_solver_input(state: PipelineState) -> SolverInput:
     submissions = state.get("availability_submissions", [])
     submission_roster_ids = state.get("submission_roster_ids") or {}
 
+    # This run's freshly-parsed availability, keyed by roster id - takes
+    # priority since it's the most current data for whoever's file was part
+    # of this run. Everyone else falls back to row.availability, persisted
+    # on their roster row by a PRIOR run's roster_confirm_node (see
+    # crud.upsert_from_submission()) - NOT an empty dict. Defaulting to {}
+    # here was the Step 0 bug: a run that only re-uploads one person's
+    # corrected file would silently zero out every other roster member's
+    # availability for that solve.
     availability_by_person_id = {
         submission_roster_ids[idx]: sub.availability
         for idx, sub in enumerate(submissions)
@@ -157,7 +167,7 @@ def _build_solver_input(state: PipelineState) -> SolverInput:
             experience_rating=row.experience_rating,
             proximity=row.proximity,
             hours_requested=row.hours_requested,
-            availability=availability_by_person_id.get(row.id, {}),
+            availability=availability_by_person_id.get(row.id, row.availability),
             initials=row.initials or "",
         )
         for row in roster_rows

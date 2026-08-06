@@ -6,6 +6,8 @@ Phase 5 review UI (or a quick CLI/script in the meantime) can call
 these directly. Each function opens and closes its own session.
 """
 
+import json
+
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, select
 
@@ -88,20 +90,33 @@ def list_incomplete_roster() -> list[Roster]:
 
 
 def upsert_from_submission(
-    person_id: int | None, name: str, hours_requested: int | None
+    person_id: int | None,
+    name: str,
+    hours_requested: int | None,
+    availability: dict[str, list[bool]] | None = None,
 ) -> Roster:
     """Commit one confirmed roster-confirm decision (see Section 4b, step 3).
 
     person_id given (a confirmed or manually-chosen match): update ONLY
-    hours_requested on that existing row. Never touches role_weighting,
-    experience_rating, proximity, or initials - those are set by the boss
-    directly and the submitted forms never carry them, so a wrong match
-    must not be able to clobber a returning person's already-set attributes.
+    hours_requested and availability on that existing row. Never touches
+    role_weighting, experience_rating, proximity, or initials - those are
+    set by the boss directly and the submitted forms never carry them, so a
+    wrong match must not be able to clobber a returning person's
+    already-set attributes.
+
+    availability is persisted (not just held in this run's pipeline state)
+    so that a solve triggered by a LATER run - one that doesn't re-upload
+    this person's file - still has their availability to work with. Without
+    this, only whoever's file was part of the current run would have any
+    availability at solve time; see Schedule_Optimizer_Project_Notes.md /
+    the Phase 6 regression test for the bug this caused.
 
     person_id None ("no match, treat as new"): create a fresh row with
-    name + hours_requested set and the four manual fields left NULL -
-    incomplete until the boss fills them in on the roster.
+    name + hours_requested (+ availability) set and the four manual fields
+    left NULL - incomplete until the boss fills them in on the roster.
     """
+    availability_json = json.dumps(availability) if availability is not None else None
+
     session = get_session()
     try:
         if person_id is not None:
@@ -109,8 +124,10 @@ def upsert_from_submission(
             if person is None:
                 raise RosterValidationError(f"No person with id={person_id}")
             person.hours_requested = hours_requested
+            if availability_json is not None:
+                person.availability_json = availability_json
         else:
-            person = Roster(name=name, hours_requested=hours_requested)
+            person = Roster(name=name, hours_requested=hours_requested, availability_json=availability_json)
             session.add(person)
 
         session.commit()

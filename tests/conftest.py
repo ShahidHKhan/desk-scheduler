@@ -1,0 +1,44 @@
+"""
+Shared pytest fixtures: an isolated on-disk SQLite DB for tests that touch
+crud.py/database.py, separate from the dev roster.db.
+
+DATABASE_PATH (read by database.py) is set here, at module import time,
+before any test module gets a chance to import database/crud - crud/DB
+tests need this in place before those modules bind their engine.
+"""
+
+import os
+import tempfile
+
+_tmpdir = tempfile.mkdtemp(prefix="scheduler_pytest_")
+os.environ["DATABASE_PATH"] = os.path.join(_tmpdir, "test_roster.db")
+
+import pytest
+from dotenv import load_dotenv
+from sqlalchemy import delete
+
+# Loaded after DATABASE_PATH above so the test DB path isn't clobbered
+# (load_dotenv() never overrides an already-set env var) - but still
+# populates GEMINI_API_KEY etc. from .env for tests that need a real key
+# (e.g. tests/test_judge.py's live-API test), same as router.py does for
+# the app itself.
+load_dotenv()
+
+import database
+import models
+
+database.init_db()
+
+
+@pytest.fixture(autouse=True)
+def clean_roster():
+    """Every test starts with an empty roster table - tests that need rows
+    add them via crud/fixtures. Runs before each test, not after, so a
+    failed test's leftover rows never leak into the next one."""
+    session = database.get_session()
+    try:
+        session.execute(delete(models.Roster))
+        session.commit()
+    finally:
+        session.close()
+    yield

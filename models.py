@@ -7,6 +7,8 @@ this file implements (flat single table, no semester history, CHECK
 constraints for fixed-category fields).
 """
 
+import json
+
 from sqlalchemy import CheckConstraint, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -65,6 +67,18 @@ class Roster(Base):
     # because that one value is missing.
     hours_requested: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Persisted availability, JSON-serialized dict[str, list[bool]] (day ->
+    # per-slot booleans, same shape as schema.AvailabilitySubmission.availability
+    # and model_input.Person.availability). Without this column, availability
+    # only ever lived in a single pipeline run's ephemeral state - a solve
+    # triggered by a run that only re-uploaded one person's corrected file
+    # would build every OTHER roster member's Person with availability={}
+    # (nothing marked available anywhere), silently dropping them from the
+    # solve. Persisting it here means a person's availability survives across
+    # runs and is only overwritten when *their* submission is re-parsed and
+    # re-confirmed (see crud.upsert_from_submission()).
+    availability_json: Mapped[str | None] = mapped_column(String, nullable=True)
+
     __table_args__ = (
         CheckConstraint(
             f"role_weighting IN {ROLE_WEIGHTINGS}",
@@ -93,6 +107,13 @@ class Roster(Base):
     def missing_fields(self) -> list[str]:
         """Which of the four manual fields are still unset, if any."""
         return [field for field in MANUAL_FIELDS if getattr(self, field) is None]
+
+    @property
+    def availability(self) -> dict[str, list[bool]]:
+        """Deserialized availability_json, or {} if never set."""
+        if not self.availability_json:
+            return {}
+        return json.loads(self.availability_json)
 
     def __repr__(self) -> str:
         return (
