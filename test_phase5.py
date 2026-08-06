@@ -21,6 +21,8 @@ import openpyxl
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
+import crud
+import database
 from build_model import build_model
 from graph import build_graph
 from locks import validate_locks
@@ -133,65 +135,103 @@ def test_full_edit_resolve_cycle():
     tmpdir = tempfile.mkdtemp()
     paths = _make_synthetic_xlsx_paths(roster, tmpdir)
 
-    with SqliteSaver.from_conn_string(f"{tmpdir}/checkpoints.db") as checkpointer:
-        app = build_graph(checkpointer)
-        config = {"configurable": {"thread_id": "phase5-test"}}
-
-        result = app.invoke({"submission_file_paths": paths, "roster": roster}, config=config)
-        assert "__interrupt__" in result, f"expected a pause at human_review, got {result.get('solve_status')}"
-        print("OK: paused at human_review (first solve).")
-
-        # Force a specific tech onto a specific slot via an edit, and loop back to solve.
-        lock = {"person_id": 2, "day": "Thu", "slot": 12, "role": "tech", "value": True}
-        result = app.invoke(Command(resume={"decision": "edit", "locked_assignments": [lock]}), config=config)
-        assert not result.get("lock_conflicts"), f"unexpected lock conflict: {result.get('lock_conflicts')}"
-        assert "__interrupt__" in result, "expected the edit to loop back to solve and pause again at human_review"
-        print("OK: edit accepted, looped solve -> human_review, paused again.")
-
-        forced = any(
-            a["person"] == "Tech2" and a["day"] == "Thu" and a["slot"] == 12 and a["role"] == "tech"
-            for a in result["solve_result"]["assignments"]
+    # Seed the DB-backed roster (the graph now builds its solver input from
+    # crud.list_roster(), not from a "roster" key passed into invoke()) -
+    # complete rows so roster_completeness_check passes with nothing to fix.
+    database.init_db()
+    db_id_by_name = {}
+    for p in roster:
+        db_person = crud.add_person(
+            p.name, f"I{p.id}", p.role_weighting, p.experience_rating, p.proximity, p.hours_requested
         )
-        assert forced, "the edit's lock should be reflected in the re-solved schedule"
-        good_solve_result = result["solve_result"]
-        print("OK: re-solved schedule reflects the edit.")
+        db_id_by_name[p.name] = db_person.id
 
-        # Now the case that a naive "loop back only on lock_conflicts" fix
-        # would miss: force every tech-capable person OUT of one weekday slot.
-        # Each individual lock is valid (a force-out can't conflict with
-        # availability/capability), so validate_locks() passes clean - but the
-        # exactly-2-tech coverage requirement becomes unsatisfiable, so the
-        # CP-SAT solve itself goes INFEASIBLE. This must fall back to the last
-        # good schedule and re-pause at human_review, not dead-end at explain.
-        breaking_locks = [lock] + [
-            {"person_id": i, "day": "Mon", "slot": 3, "role": "tech", "value": False} for i in range(1, 11)
-        ]
-        result = app.invoke(
-            Command(resume={"decision": "edit", "locked_assignments": breaking_locks}), config=config
-        )
-        assert not result.get("lock_conflicts"), (
-            f"each force-out lock is individually valid, expected no lock_conflicts, got {result.get('lock_conflicts')}"
-        )
-        assert result.get("infeasibility_gaps"), "expected the coverage-breaking edit to surface infeasibility_gaps"
-        assert "__interrupt__" in result, (
-            "a re-solve failure with a prior good schedule must fall back to human_review, not dead-end at explain"
-        )
-        assert result["solve_result"] == good_solve_result, (
-            "solve_result must still be the last known-good schedule, not None and not the failed attempt"
-        )
-        print("OK: coverage-breaking (but lock-valid) edit fell back to human_review with the prior schedule intact.")
+    try:
+        with SqliteSaver.from_conn_string(f"{tmpdir}/checkpoints.db") as checkpointer:
+            app = build_graph(checkpointer)
+            config = {"configurable": {"thread_id": "phase5-test"}}
 
-        # Recover: resend just the good lock, drop the coverage-breaking batch.
-        result = app.invoke(Command(resume={"decision": "edit", "locked_assignments": [lock]}), config=config)
-        assert not result.get("infeasibility_gaps") and not result.get("lock_conflicts")
-        assert "__interrupt__" in result
-        print("OK: recovered with a clean edit after the failed one.")
+            result = app.invoke({"submission_file_paths": paths}, config=config)
+            assert "__interrupt__" in result, f"expected a pause at roster_confirm, got {result.get('solve_status')}"
+            interrupt_payload = result["__interrupt__"][0].value
+            assert "candidates" in interrupt_payload, "expected the first pause to be roster_confirm"
+            print("OK: paused at roster_confirm.")
 
-        final = app.invoke(Command(resume={"decision": "approved"}), config=config)
-        assert final["final_schedule"] is not None, "expected a final_schedule after approval"
-        print("OK: approved, final_schedule produced.\n")
+            # Every submission's name exactly matches a roster row we just
+            # seeded - confirm every suggested match as-is.
+            decisions = [{"index": c["index"], "action": "confirm"} for c in interrupt_payload["candidates"]]
+            result = app.invoke(Command(resume={"decisions": decisions}), config=config)
+            assert "__interrupt__" in result, f"expected a pause at human_review, got {result.get('solve_status')}"
+            assert "candidates" not in result["__interrupt__"][0].value, (
+                "roster was already complete - should not re-pause at roster_confirm or the completeness gate"
+            )
+            print("OK: roster confirmed, roster complete, paused at human_review (first solve).")
+
+            _run_edit_resolve_assertions(app, config, db_id_by_name)
+    finally:
+        for person_id in db_id_by_name.values():
+            crud.delete_person(person_id)
 
     shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _run_edit_resolve_assertions(app, config, db_id_by_name):
+    # Force a specific tech onto a specific slot via an edit, and loop back to solve.
+    tech2_id = db_id_by_name["Tech2"]
+    lock = {"person_id": tech2_id, "day": "Thu", "slot": 12, "role": "tech", "value": True}
+    result = app.invoke(Command(resume={"decision": "edit", "locked_assignments": [lock]}), config=config)
+    assert not result.get("lock_conflicts"), f"unexpected lock conflict: {result.get('lock_conflicts')}"
+    assert "__interrupt__" in result, "expected the edit to loop back to solve and pause again at human_review"
+    print("OK: edit accepted, looped solve -> human_review, paused again.")
+
+    forced = any(
+        a["person"] == "Tech2" and a["day"] == "Thu" and a["slot"] == 12 and a["role"] == "tech"
+        for a in result["solve_result"]["assignments"]
+    )
+    assert forced, "the edit's lock should be reflected in the re-solved schedule"
+    good_solve_result = result["solve_result"]
+    print("OK: re-solved schedule reflects the edit.")
+
+    # Now the case that a naive "loop back only on lock_conflicts" fix
+    # would miss: force every tech-capable person OUT of one WEEKEND slot.
+    # Each individual lock is valid (a force-out can't conflict with
+    # availability/capability), so validate_locks() passes clean - but the
+    # weekend's exactly-1-tech coverage requirement (still a hard
+    # constraint - see build_model.py) becomes unsatisfiable, so the
+    # CP-SAT solve itself goes INFEASIBLE. This must fall back to the last
+    # good schedule and re-pause at human_review, not dead-end at explain.
+    # (Note: this used to force a WEEKDAY slot instead, but weekday
+    # coverage is now a soft/penalized constraint - forcing 10 techs out
+    # of one weekday slot no longer breaks feasibility, it just gets
+    # reported as a shortfall. Weekend coverage is what's still hard.)
+    breaking_locks = [lock] + [
+        {"person_id": db_id_by_name[f"Tech{i}"], "day": "Sat", "slot": 10, "role": "tech", "value": False}
+        for i in range(1, 11)
+    ]
+    result = app.invoke(
+        Command(resume={"decision": "edit", "locked_assignments": breaking_locks}), config=config
+    )
+    assert not result.get("lock_conflicts"), (
+        f"each force-out lock is individually valid, expected no lock_conflicts, got {result.get('lock_conflicts')}"
+    )
+    assert result.get("infeasibility_gaps"), "expected the coverage-breaking edit to surface infeasibility_gaps"
+    assert "__interrupt__" in result, (
+        "a re-solve failure with a prior good schedule must fall back to human_review, not dead-end at explain"
+    )
+    assert result["solve_result"] == good_solve_result, (
+        "solve_result must still be the last known-good schedule, not None and not the failed attempt"
+    )
+    print("OK: coverage-breaking (but lock-valid) edit fell back to human_review with the prior schedule intact.")
+
+    # Recover: resend just the good lock, drop the coverage-breaking batch.
+    result = app.invoke(Command(resume={"decision": "edit", "locked_assignments": [lock]}), config=config)
+    assert not result.get("infeasibility_gaps") and not result.get("lock_conflicts")
+    assert "__interrupt__" in result
+    print("OK: recovered with a clean edit after the failed one.")
+
+    final = app.invoke(Command(resume={"decision": "approved"}), config=config)
+    assert final["final_schedule"] is not None, "expected a final_schedule after approval"
+    print("OK: approved, final_schedule produced.\n")
 
 
 if __name__ == "__main__":

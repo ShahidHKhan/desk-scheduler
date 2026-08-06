@@ -59,13 +59,36 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
                 for slot in OPERATING_SLOTS[day]:
                     model.Add(x[p.id, day, slot, "tech"] == 0)
 
-    # --- Hard constraint: weekday coverage - exactly 2 assistant + 2 tech ---
+    # --- Soft constraint: weekday coverage - target 2 assistant + 2 tech ---
+    # Was a hard "== 2" until real rosters showed it was too rigid: a
+    # single understaffed slot (commonly the opening/closing slot, where
+    # fewer people mark themselves available) made the ENTIRE schedule
+    # infeasible, even when every other slot was fully covered. Now it's
+    # a capped target - `<= 2` still holds (so the solver can't stuff
+    # extra people into a slot just to burn hours), but falling short of
+    # 2 is allowed, at a heavy penalty in the objective below, so the
+    # solver only accepts a shortfall when it truly can't do better.
+    # Weekend coverage (below) stays hard - the desk must have someone
+    # there every weekend slot, no exceptions.
+    WEEKDAY_ASSISTANTS_TARGET = 2
+    WEEKDAY_TECHS_TARGET = 2
+    coverage_shortfalls = []  # (role, day, slot, shortfall_var)
     for day in [d for d in DAYS if d in WEEKDAYS]:
         for slot in OPERATING_SLOTS[day]:
             assistants = [x[p.id, day, slot, "assistant"] for p in people]
             techs = [x[p.id, day, slot, "tech"] for p in people]
-            model.Add(sum(assistants) == 2)
-            model.Add(sum(techs) == 2)
+            model.Add(sum(assistants) <= WEEKDAY_ASSISTANTS_TARGET)
+            model.Add(sum(techs) <= WEEKDAY_TECHS_TARGET)
+
+            assistant_shortfall = model.NewIntVar(
+                0, WEEKDAY_ASSISTANTS_TARGET, f"assistant_shortfall_{day}_{slot}"
+            )
+            model.Add(assistant_shortfall >= WEEKDAY_ASSISTANTS_TARGET - sum(assistants))
+            coverage_shortfalls.append(("assistant", day, slot, assistant_shortfall))
+
+            tech_shortfall = model.NewIntVar(0, WEEKDAY_TECHS_TARGET, f"tech_shortfall_{day}_{slot}")
+            model.Add(tech_shortfall >= WEEKDAY_TECHS_TARGET - sum(techs))
+            coverage_shortfalls.append(("tech", day, slot, tech_shortfall))
 
     # --- Hard constraint: weekend coverage - exactly 1 tech-role person ---
     for day in [d for d in DAYS if d in WEEKEND_DAYS]:
@@ -159,12 +182,28 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
     # placeholder, like MIN_POSITIONED_WORDS in pdf_parser.py - tune once
     # there's a real schedule to see how often slivers actually occur.
     SLIVER_PENALTY_WEIGHT = 10
-    model.Minimize(max_shortfall_permille + SLIVER_PENALTY_WEIGHT * sum(sliver_starts))
+
+    # Coverage shortfall dominates everything else in the objective: its
+    # per-unit weight is set above max_shortfall_permille's entire 0-1000
+    # range, so the solver always prefers covering one more weekday
+    # slot/role over any possible fairness gain - it only accepts a
+    # shortfall when no feasible assignment can avoid it. This keeps
+    # weekday coverage "hard in practice, soft on paper": always solvable,
+    # but never traded away cheaply.
+    COVERAGE_SHORTFALL_WEIGHT = 2000
+    total_coverage_shortfall = sum(var for _, _, _, var in coverage_shortfalls)
+
+    model.Minimize(
+        COVERAGE_SHORTFALL_WEIGHT * total_coverage_shortfall
+        + max_shortfall_permille
+        + SLIVER_PENALTY_WEIGHT * sum(sliver_starts)
+    )
 
     variables = {
         "x": x,
         "work": work,
         "max_shortfall_permille": max_shortfall_permille,
         "sliver_starts": sliver_starts,
+        "coverage_shortfalls": coverage_shortfalls,
     }
     return model, variables

@@ -20,6 +20,8 @@ env/
 # SQLite database (dev data, don't commit)
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.sqlite3
 
 # OS cruft

@@ -1,9 +1,10 @@
 """
-The orchestration graph: ingest -> validate -> solve -> (diagnose+explain
-if infeasible, otherwise human review) -> output.
+The orchestration graph: ingest -> validate -> roster_confirm ->
+roster_completeness_check -> solve -> (diagnose+explain if infeasible,
+otherwise human review) -> output.
 
 Run directly to see a full synthetic run, including the interrupt/resume
-cycle at the human-review gate:
+cycles at the roster-confirm, roster-completeness, and human-review gates:
     python graph.py
 """
 
@@ -11,8 +12,10 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
+import crud
 from locks import validate_locks
-from model_input import LockedAssignment, SolverInput
+from model_input import LockedAssignment, Person, SolverInput
+from roster_match import match_submissions_to_roster
 from router import ingest
 from solve import solve as run_solver
 from state import PipelineState
@@ -42,27 +45,131 @@ def validate_node(state: PipelineState) -> dict:
     return {"validation_errors": errors}
 
 
-def _join_roster_and_availability(state: PipelineState) -> SolverInput:
-    """TEMPORARY name-matching stub - NOT the real name-linking design.
+def roster_confirm_node(state: PipelineState) -> dict:
+    """Human-in-the-loop gate: confirm each parsed submission against the
+    roster before anything gets written (Section 4b, step 3).
 
-    The notes doc explicitly defers the roster<->availability linking
-    decision (manual vs. auto-match). This is a placeholder exact-name
-    match ONLY so the graph is testable end-to-end - it must be replaced
-    once that decision is actually made. See PHASE4_HANDOFF.md.
+    Nothing auto-commits. For each parsed submission we suggest an
+    existing-roster match (or None); the boss confirms, redirects to a
+    different person, or creates a new row. Only then do we write, via
+    crud.upsert_from_submission() - which never touches a matched row's
+    role_weighting/experience_rating/proximity/initials.
     """
-    by_name = {s.name: s for s in state["availability_submissions"]}
-    for person in state["roster"]:
-        sub = by_name.get(person.name)
-        if sub is not None:
-            person.availability = sub.availability
-    return SolverInput(people=state["roster"])
+    if state.get("validation_errors"):
+        # Nothing was successfully ingested this run - solve_node's own
+        # validation_errors check will short-circuit to SKIPPED, so there's
+        # nothing meaningful to confirm.
+        return {"submission_roster_ids": {}}
+
+    submissions = state["availability_submissions"]
+    candidates = match_submissions_to_roster(submissions, crud.list_roster())
+
+    decision = interrupt(
+        {
+            "message": "Confirm each parsed submission against the roster before committing.",
+            "candidates": [
+                {
+                    "index": i,
+                    "parsed_name": c.submission.name,
+                    "hours_requested": c.submission.hours_requested,
+                    "suggested_match_id": c.suggested_match_id,
+                    "suggested_match_name": c.suggested_match_name,
+                }
+                for i, c in enumerate(candidates)
+            ],
+        }
+    )
+
+    submission_roster_ids: dict[int, int] = {}
+    for raw in decision.get("decisions", []):
+        idx = raw["index"]
+        action = raw.get("action", "new")
+        if action == "new":
+            person_id = None
+        elif action == "choose_other":
+            person_id = raw["person_id"]
+        else:  # "confirm" - use the suggested match
+            person_id = candidates[idx].suggested_match_id
+
+        submission = candidates[idx].submission
+        person = crud.upsert_from_submission(person_id, submission.name, submission.hours_requested)
+        submission_roster_ids[idx] = person.id
+
+    return {"submission_roster_ids": submission_roster_ids}
+
+
+def roster_completeness_check_node(state: PipelineState) -> dict:
+    """Hard gate: refuse to proceed to solve while any roster row is
+    missing role_weighting, experience_rating, proximity, or initials
+    (Section 4b, step 5). Loops - re-checking after each resume - rather
+    than a single pass, since the boss may need several trips to the
+    Roster panel to clear every incomplete row.
+    """
+    if state.get("validation_errors"):
+        return {"roster_incomplete_rows": []}
+
+    while True:
+        incomplete = crud.list_incomplete_roster()
+        if not incomplete:
+            return {"roster_incomplete_rows": []}
+
+        interrupt(
+            {
+                "message": (
+                    "Solve is blocked: some roster rows are missing required "
+                    "fields. Fill them in on the Roster panel, then continue."
+                ),
+                "incomplete_rows": [
+                    {"id": p.id, "name": p.name, "missing_fields": p.missing_fields}
+                    for p in incomplete
+                ],
+            }
+        )
+        # Resumed - loop back around and re-query; if still incomplete,
+        # interrupt() fires again (a fresh call site within this same
+        # while loop) rather than proceeding.
+
+
+def _build_solver_input(state: PipelineState) -> SolverInput:
+    """Build the solver's People list from the current (post-confirm,
+    post-completeness-gate) roster in the DB, joined with this run's
+    parsed availability via the person ids roster_confirm_node committed.
+
+    Deliberately re-reads the roster from the DB on every call rather than
+    threading it through state, so a re-solve after an edit (human_review
+    -> solve loop) always reflects the committed roster, not a stale copy.
+    """
+    roster_rows = crud.list_roster()
+    submissions = state.get("availability_submissions", [])
+    submission_roster_ids = state.get("submission_roster_ids") or {}
+
+    availability_by_person_id = {
+        submission_roster_ids[idx]: sub.availability
+        for idx, sub in enumerate(submissions)
+        if idx in submission_roster_ids
+    }
+
+    people = [
+        Person(
+            id=row.id,
+            name=row.name,
+            role_weighting=row.role_weighting,
+            experience_rating=row.experience_rating,
+            proximity=row.proximity,
+            hours_requested=row.hours_requested,
+            availability=availability_by_person_id.get(row.id, {}),
+            initials=row.initials or "",
+        )
+        for row in roster_rows
+    ]
+    return SolverInput(people=people)
 
 
 def solve_node(state: PipelineState) -> dict:
     if state["validation_errors"]:
         return {"solve_status": "SKIPPED", "infeasibility_gaps": state["validation_errors"], "lock_conflicts": []}
 
-    data = _join_roster_and_availability(state)
+    data = _build_solver_input(state)
     data.locked_assignments = state.get("locked_assignments") or []
 
     # Catch a contradictory manual edit before it ever reaches coverage
@@ -118,17 +225,27 @@ def explain_node(state: PipelineState) -> dict:
 def human_review_node(state: PipelineState) -> Command:
     gaps = state.get("infeasibility_gaps") or []
     conflicts = state.get("lock_conflicts") or []
+    # Weekday coverage is a soft constraint (build_model.py) - a feasible
+    # solve can still leave weekday slots understaffed relative to the 2+2
+    # target. Distinct from `gaps` above (which only ever holds
+    # guaranteed-infeasible weekend gaps): this is informational on an
+    # otherwise-successful solve, not a routing failure.
+    shortfalls = state["solve_result"].get("coverage_shortfalls", []) if state["solve_result"] else []
+
     # Reaching human_review with gaps/conflicts already set means this is a
     # re-solve that failed (see _route_after_solve) - solve_result here is
     # the last known-good schedule, not the result of this failed attempt.
     # Say so explicitly rather than presenting it as if nothing went wrong.
-    message = (
-        "Your last edit could not be applied - still showing your last "
-        "approved-pending schedule. Try a different edit, or approve/reject "
-        "this one as-is."
-        if gaps or conflicts
-        else "Schedule ready for review."
-    )
+    if gaps or conflicts:
+        message = (
+            "Your last edit could not be applied - still showing your last "
+            "approved-pending schedule. Try a different edit, or approve/reject "
+            "this one as-is."
+        )
+    elif shortfalls:
+        message = f"Schedule ready for review - {len(shortfalls)} weekday slot(s) are understaffed."
+    else:
+        message = "Schedule ready for review."
 
     decision = interrupt(
         {
@@ -137,6 +254,7 @@ def human_review_node(state: PipelineState) -> Command:
             "hours_assigned": state["solve_result"]["hours_assigned"] if state["solve_result"] else {},
             "infeasibility_gaps": gaps,
             "lock_conflicts": conflicts,
+            "coverage_shortfalls": shortfalls,
         }
     )
     review_decision = decision.get("decision", "rejected")
@@ -179,6 +297,8 @@ def build_graph(checkpointer):
     graph = StateGraph(PipelineState)
     graph.add_node("ingest", ingest_node)
     graph.add_node("validate", validate_node)
+    graph.add_node("roster_confirm", roster_confirm_node)
+    graph.add_node("roster_completeness_check", roster_completeness_check_node)
     graph.add_node("solve", solve_node)
     graph.add_node("explain", explain_node)
     graph.add_node("human_review", human_review_node)
@@ -186,7 +306,9 @@ def build_graph(checkpointer):
 
     graph.set_entry_point("ingest")
     graph.add_edge("ingest", "validate")
-    graph.add_edge("validate", "solve")
+    graph.add_edge("validate", "roster_confirm")
+    graph.add_edge("roster_confirm", "roster_completeness_check")
+    graph.add_edge("roster_completeness_check", "solve")
     graph.add_conditional_edges("solve", _route_after_solve, {"explain": "explain", "human_review": "human_review"})
     graph.add_edge("explain", END)
     graph.add_conditional_edges(
@@ -198,7 +320,7 @@ def build_graph(checkpointer):
 
 
 if __name__ == "__main__":
-    from model_input import Person
+    import database
 
     def full_week_availability():
         weekday = [True] * 24 + [False]
@@ -207,8 +329,19 @@ if __name__ == "__main__":
         return {"Mon": weekday, "Tue": weekday, "Wed": weekday, "Thu": weekday,
                 "Fri": fri, "Sat": weekend, "Sun": weekend}
 
-    roster = [Person(i, f"Tech{i}", "tech_only", 3, 1, 15, {}) for i in range(1, 11)]
-    roster += [Person(i, f"Asst{i}", "assistant_only", 3, 1, 15, {}) for i in range(11, 21)]
+    people_specs = [(f"Tech{i}", "tech_only", f"T{i}") for i in range(1, 11)]
+    people_specs += [(f"Asst{i}", "assistant_only", f"A{i}") for i in range(11, 21)]
+
+    # Seed a complete roster row per synthetic person first - roster_confirm
+    # then finds an exact-name match for every submission, and
+    # roster_completeness_check passes with nothing to fix, so this self-test
+    # exercises the happy path straight through to human_review. Cleaned up
+    # at the end so repeat runs don't pile up rows in the dev roster.db.
+    database.init_db()
+    inserted_ids = []
+    for name, role_weighting, initials in people_specs:
+        person = crud.add_person(name, initials, role_weighting, 3, 1, 15)
+        inserted_ids.append(person.id)
 
     # Build tiny synthetic xlsx files so ingest_node has something real to read.
     # Built from a blank workbook rather than the real Blank_Schedule.xlsx
@@ -220,12 +353,12 @@ if __name__ == "__main__":
 
     tmpdir = tempfile.mkdtemp()
     paths = []
-    for p in roster:
-        path = f"{tmpdir}/{p.name}.xlsx"
+    for name, _role_weighting, _initials in people_specs:
+        path = f"{tmpdir}/{name}.xlsx"
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws["C2"] = p.name
-        ws["J2"] = p.hours_requested
+        ws["C2"] = name
+        ws["J2"] = 15
         avail = full_week_availability()
         day_cols = {"Mon": "C", "Tue": "E", "Wed": "G", "Thu": "I", "Fri": "K", "Sat": "M", "Sun": "O"}
         for day, col in day_cols.items():
@@ -235,20 +368,28 @@ if __name__ == "__main__":
         wb.save(path)
         paths.append(path)
 
-    with SqliteSaver.from_conn_string(f"{tmpdir}/checkpoints.db") as checkpointer:
-        app = build_graph(checkpointer)
-        config = {"configurable": {"thread_id": "test-run-1"}}
+    try:
+        with SqliteSaver.from_conn_string(f"{tmpdir}/checkpoints.db") as checkpointer:
+            app = build_graph(checkpointer)
+            config = {"configurable": {"thread_id": "test-run-1"}}
 
-        result = app.invoke(
-            {"submission_file_paths": paths, "roster": roster},
-            config=config,
-        )
-        print("Paused at:", list(result.get("__interrupt__", "no interrupt"))[:1] or result)
+            result = app.invoke({"submission_file_paths": paths}, config=config)
+            interrupt_payload = result["__interrupt__"][0].value
+            print("Paused at roster_confirm:", interrupt_payload["message"])
 
-        # Simulate the boss approving, potentially after a "restart"
-        # (new checkpointer connection, same thread_id)
-        final = app.invoke(Command(resume={"decision": "approved"}), config=config)
-        print("Final solve_status:", final["solve_status"])
-        print("Final schedule present:", final["final_schedule"] is not None)
-        if final["final_schedule"]:
-            print("Sample hours_assigned:", dict(list(final["final_schedule"]["hours_assigned"].items())[:3]))
+            # Every submission's name exactly matches a roster row we just
+            # seeded, so confirm every suggested match as-is.
+            decisions = [{"index": c["index"], "action": "confirm"} for c in interrupt_payload["candidates"]]
+            result = app.invoke(Command(resume={"decisions": decisions}), config=config)
+            print("Paused at:", list(result.get("__interrupt__", "no interrupt"))[:1] or result)
+
+            # Simulate the boss approving, potentially after a "restart"
+            # (new checkpointer connection, same thread_id)
+            final = app.invoke(Command(resume={"decision": "approved"}), config=config)
+            print("Final solve_status:", final["solve_status"])
+            print("Final schedule present:", final["final_schedule"] is not None)
+            if final["final_schedule"]:
+                print("Sample hours_assigned:", dict(list(final["final_schedule"]["hours_assigned"].items())[:3]))
+    finally:
+        for person_id in inserted_ids:
+            crud.delete_person(person_id)

@@ -7,10 +7,10 @@ these directly. Each function opens and closes its own session.
 """
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from database import get_session
-from models import Roster, ROLE_WEIGHTINGS
+from models import MANUAL_FIELDS, Roster, ROLE_WEIGHTINGS
 
 
 class RosterValidationError(Exception):
@@ -66,6 +66,59 @@ def list_roster() -> list[Roster]:
     session = get_session()
     try:
         return list(session.execute(select(Roster).order_by(Roster.name)).scalars())
+    finally:
+        session.close()
+
+
+def list_incomplete_roster() -> list[Roster]:
+    """Return roster rows missing any of the four boss-set-manually fields.
+
+    Backs the Phase 4 solve-time hard gate and the Phase 5 roster panel's
+    "Incomplete" filter.
+    """
+    session = get_session()
+    try:
+        conditions = [getattr(Roster, field).is_(None) for field in MANUAL_FIELDS]
+        rows = session.execute(
+            select(Roster).where(or_(*conditions)).order_by(Roster.name)
+        ).scalars()
+        return list(rows)
+    finally:
+        session.close()
+
+
+def upsert_from_submission(
+    person_id: int | None, name: str, hours_requested: int | None
+) -> Roster:
+    """Commit one confirmed roster-confirm decision (see Section 4b, step 3).
+
+    person_id given (a confirmed or manually-chosen match): update ONLY
+    hours_requested on that existing row. Never touches role_weighting,
+    experience_rating, proximity, or initials - those are set by the boss
+    directly and the submitted forms never carry them, so a wrong match
+    must not be able to clobber a returning person's already-set attributes.
+
+    person_id None ("no match, treat as new"): create a fresh row with
+    name + hours_requested set and the four manual fields left NULL -
+    incomplete until the boss fills them in on the roster.
+    """
+    session = get_session()
+    try:
+        if person_id is not None:
+            person = session.get(Roster, person_id)
+            if person is None:
+                raise RosterValidationError(f"No person with id={person_id}")
+            person.hours_requested = hours_requested
+        else:
+            person = Roster(name=name, hours_requested=hours_requested)
+            session.add(person)
+
+        session.commit()
+        session.refresh(person)
+        return person
+    except IntegrityError as e:
+        session.rollback()
+        raise RosterValidationError(f"Could not upsert {name!r}: {e.orig}") from e
     finally:
         session.close()
 

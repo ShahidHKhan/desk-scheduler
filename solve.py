@@ -7,7 +7,7 @@ import os
 from ortools.sat.python import cp_model
 
 from build_model import build_model
-from diagnose import diagnose_coverage_gaps
+from diagnose import diagnose_coverage_gaps, summarize_coverage_shortfalls
 from model_input import DAYS, OPERATING_SLOTS, SolverInput
 
 # Parallel search workers - safe, free speedup (PHASE3_HANDOFF.md
@@ -30,6 +30,7 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
             "assignments": [],
             "hours_assigned": {},
             "coverage_gaps": coverage_gaps,
+            "coverage_shortfalls": [],
         }
 
     model, variables = build_model(data)
@@ -45,13 +46,18 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
         "assignments": [],
         "hours_assigned": {},
         "coverage_gaps": [],
+        # Weekday coverage is a soft constraint (build_model.py) - a
+        # feasible solve can still leave weekday slots understaffed
+        # relative to the 2+2 target. Distinct from coverage_gaps, which
+        # only ever holds guaranteed-infeasible (weekend) gaps: this is
+        # informational on an otherwise-successful solve, not a failure.
+        "coverage_shortfalls": [],
     }
 
     if not result["feasible"]:
         return result
 
     x = variables["x"]
-    people_by_id = {p.id: p for p in data.people}
 
     for p in data.people:
         assigned_slots = 0
@@ -64,6 +70,8 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
                         )
                         assigned_slots += 1
         result["hours_assigned"][p.name] = assigned_slots * 0.5
+
+    result["coverage_shortfalls"] = summarize_coverage_shortfalls(solver, variables)
 
     return result
 

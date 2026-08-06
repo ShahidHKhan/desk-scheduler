@@ -1,57 +1,66 @@
 """
-Pre-solve feasibility diagnosis.
+Pre-solve and post-solve coverage diagnosis.
 
 The CP-SAT model reports a bare INFEASIBLE with no indication of why
-(PHASE3_HANDOFF.md finding #1). This catches the clearest and most common
-cause up front: a slot where zero people are available in a role the
-coverage constraint hard-requires there - e.g. "Saturday 12:00 needs a
-tech-capable person, none available" instead of just "no schedule found".
+(PHASE3_HANDOFF.md finding #1). diagnose_coverage_gaps() catches the
+clearest and most common pre-solve cause up front: a weekend slot where
+zero tech-capable people are available at all - weekend coverage is still
+a hard constraint (exactly 1 tech-role person, no exceptions), so that
+really does guarantee INFEASIBLE before ever building the model.
 
-NOT a full feasibility prover. It only catches the "nobody at all
-available" case. A slot can pass this check and the model can still end
-up INFEASIBLE for other reasons (hours ceilings, block-length
-constraints, the no-two-rating-1s rule, etc. interacting badly). Treat a
-clean result as "no obvious staffing gap", not "guaranteed feasible".
+Weekday coverage is now a soft/penalized constraint instead (see
+build_model.py) - a weekday headcount gap no longer guarantees
+infeasibility, since the solver can still return a schedule that's
+understaffed at that slot. summarize_coverage_shortfalls() reports those
+after a feasible solve, from the shortfall variables build_model()
+returns, so the boss still sees exactly which weekday slots came up
+short even though the run "succeeded".
+
+Neither function is a full feasibility prover - a slot can pass the
+pre-solve check and the model can still end up INFEASIBLE for other
+reasons (hours ceilings, block-length constraints, the no-two-rating-1s
+rule, etc. interacting badly). Treat a clean pre-solve result as "no
+obvious hard staffing gap", not "guaranteed feasible".
 """
 
-from model_input import DAYS, OPERATING_SLOTS, WEEKDAYS, WEEKEND_DAYS, SolverInput
+from ortools.sat.python import cp_model
 
-WEEKDAY_ASSISTANTS_REQUIRED = 2
-WEEKDAY_TECHS_REQUIRED = 2
+from model_input import DAYS, OPERATING_SLOTS, WEEKEND_DAYS, SolverInput
+
 WEEKEND_TECHS_REQUIRED = 1
 
 
 def diagnose_coverage_gaps(data: SolverInput) -> list[str]:
-    """Return a list of human-readable coverage gaps, one per understaffed slot/role.
-
-    Empty list means no slot is guaranteed-infeasible by simple headcount -
-    it does NOT mean the model is guaranteed feasible overall.
+    """Return human-readable gaps that guarantee INFEASIBLE before ever
+    building the CP-SAT model. Weekend-only - see module docstring for why
+    weekday gaps are no longer diagnosed here.
     """
     problems = []
 
-    for day in DAYS:
-        is_weekday = day in WEEKDAYS
-        is_weekend = day in WEEKEND_DAYS
+    for day in [d for d in DAYS if d in WEEKEND_DAYS]:
         for slot in OPERATING_SLOTS[day]:
-            available = [p for p in data.people if p.is_available(day, slot)]
-            tech_available = [p for p in available if p.can_work_tech()]
-
-            if is_weekday:
-                if len(available) < WEEKDAY_ASSISTANTS_REQUIRED:
-                    problems.append(
-                        f"{day} slot {slot}: needs {WEEKDAY_ASSISTANTS_REQUIRED} people "
-                        f"for assistant coverage, only {len(available)} available at all"
-                    )
-                if len(tech_available) < WEEKDAY_TECHS_REQUIRED:
-                    problems.append(
-                        f"{day} slot {slot}: needs {WEEKDAY_TECHS_REQUIRED} tech-capable "
-                        f"people, only {len(tech_available)} available"
-                    )
-            elif is_weekend:
-                if len(tech_available) < WEEKEND_TECHS_REQUIRED:
-                    problems.append(
-                        f"{day} slot {slot}: needs {WEEKEND_TECHS_REQUIRED} tech-capable "
-                        f"person, none available"
-                    )
+            tech_available = [
+                p for p in data.people if p.is_available(day, slot) and p.can_work_tech()
+            ]
+            if len(tech_available) < WEEKEND_TECHS_REQUIRED:
+                problems.append(
+                    f"{day} slot {slot}: needs {WEEKEND_TECHS_REQUIRED} tech-capable "
+                    f"person, none available"
+                )
 
     return problems
+
+
+def summarize_coverage_shortfalls(solver: cp_model.CpSolver, variables: dict) -> list[str]:
+    """Human-readable messages for weekday slots the solver accepted as
+    understaffed (the soft coverage constraint in build_model.py). Only
+    meaningful after a feasible solve - call with the CpSolver used to
+    solve the model and the `variables` dict build_model() returned.
+    Empty list means every weekday slot hit its 2+2 target.
+    """
+    messages = []
+    for role, day, slot, shortfall_var in variables.get("coverage_shortfalls", []):
+        shortfall = solver.Value(shortfall_var)
+        if shortfall > 0:
+            messages.append(f"{day} slot {slot}: understaffed by {shortfall} {role}(s)")
+    return messages
