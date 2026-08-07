@@ -12,11 +12,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from models import Base
 
-# Reads DATABASE_PATH (see .env.example) so tests can point at an isolated
-# throwaway file instead of the dev roster.db - falls back to "roster.db"
-# to preserve prior behavior when unset.
+# DATABASE_URL (see .env.example), when set, points at the deployed Postgres
+# (Supabase) instance - used in production (Phase 7). When unset, falls back
+# to local SQLite via DATABASE_PATH, same as before Phase 7: tests set
+# DATABASE_PATH (see tests/conftest.py) and never DATABASE_URL, so the
+# pytest suite is unaffected by this fallback and keeps running against
+# local SQLite regardless of this branch.
 DB_PATH = os.environ.get("DATABASE_PATH", "roster.db")
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+DATABASE_URL = os.environ.get("DATABASE_URL") or f"sqlite:///{DB_PATH}"
 
 engine = create_engine(DATABASE_URL, echo=False)
 
