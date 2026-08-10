@@ -5,11 +5,13 @@ Run with:
     streamlit run app.py
 """
 
+import os
 import sqlite3
 import tempfile
 from pathlib import Path
 
 import streamlit as st
+from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
@@ -19,6 +21,8 @@ from format_output import build_schedule_grid
 from graph import build_graph
 from model_input import DAYS, ROLES
 from models import ROLE_WEIGHTINGS
+
+load_dotenv()
 
 CHECKPOINT_DB = "graph_checkpoints.db"
 # Single-user tool: one in-flight pipeline run at a time is an accepted
@@ -361,7 +365,34 @@ def render_output_tab():
     )
 
 
+def require_login() -> None:
+    """Blocks the entire app behind a username/password gate until
+    st.session_state marks the session authenticated. Credentials come from
+    APP_USERNAME/APP_PASSWORD (env var locally via .env, Fly secret in
+    production) - same storage pattern as HawkEye's Gradio auth, adapted to
+    Streamlit since it has no launch()-level auth of its own."""
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title("Service Desk Scheduler")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in")
+
+    if submitted:
+        if username == os.getenv("APP_USERNAME") and password == os.getenv("APP_PASSWORD"):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Invalid username or password.")
+
+    st.stop()
+
+
 st.set_page_config(page_title="Service Desk Scheduler", layout="wide")
+require_login()
+
 st.title("Service Desk Scheduler")
 
 tab_roster, tab_import, tab_review, tab_output = st.tabs(
