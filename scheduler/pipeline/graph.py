@@ -5,20 +5,20 @@ otherwise human review) -> output.
 
 Run directly to see a full synthetic run, including the interrupt/resume
 cycles at the roster-confirm, roster-completeness, and human-review gates:
-    python graph.py
+    python -m scheduler.pipeline.graph
 """
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
-import crud
-from locks import validate_locks
-from model_input import LockedAssignment, Person, SolverInput
-from roster_match import match_submissions_to_roster
-from router import ingest
-from solve import solve as run_solver
-from state import PipelineState
+from scheduler.db import crud
+from scheduler.ingest.roster_match import match_submissions_to_roster
+from scheduler.ingest.router import ingest
+from scheduler.pipeline.state import PipelineState
+from scheduler.solver.locks import validate_locks
+from scheduler.solver.model_input import LockedAssignment, Person, SolverInput
+from scheduler.solver.solve import solve as run_solver
 
 
 def ingest_node(state: PipelineState) -> dict:
@@ -47,7 +47,7 @@ def validate_node(state: PipelineState) -> dict:
 
 def roster_confirm_node(state: PipelineState) -> dict:
     """Human-in-the-loop gate: confirm each parsed submission against the
-    roster before anything gets written (Section 4b, step 3).
+    roster before anything gets written.
 
     Nothing auto-commits. For each parsed submission we suggest an
     existing-roster match (or None); the boss confirms, redirects to a
@@ -103,7 +103,7 @@ def roster_confirm_node(state: PipelineState) -> dict:
 def roster_completeness_check_node(state: PipelineState) -> dict:
     """Hard gate: refuse to proceed to solve while any roster row is
     missing role_weighting, experience_rating, proximity, or initials
-    (Section 4b, step 5). Loops - re-checking after each resume - rather
+    Loops - re-checking after each resume - rather
     than a single pass, since the boss may need several trips to the
     Roster panel to clear every incomplete row.
     """
@@ -150,7 +150,7 @@ def _build_solver_input(state: PipelineState) -> SolverInput:
     # of this run. Everyone else falls back to row.availability, persisted
     # on their roster row by a PRIOR run's roster_confirm_node (see
     # crud.upsert_from_submission()) - NOT an empty dict. Defaulting to {}
-    # here was the Step 0 bug: a run that only re-uploads one person's
+    # here was a real bug: a run that only re-uploads one person's
     # corrected file would silently zero out every other roster member's
     # availability for that solve.
     availability_by_person_id = {
@@ -215,9 +215,9 @@ def solve_node(state: PipelineState) -> dict:
 
 
 def explain_node(state: PipelineState) -> dict:
-    # Deterministic/template explanation for now. The notes doc (Section
-    # 3) flags explain/repair as legitimate LLM territory - not wired up
-    # yet, this is a plain formatted summary. See PHASE4_HANDOFF.md.
+    # Deterministic/template explanation for now. Explain/repair is a
+    # reasonable place for an LLM later (graded by evals/judge.py), but
+    # this is a plain formatted summary.
     #
     # Lock conflicts and coverage gaps are different failure modes (a bad
     # manual edit vs. not enough staff) - the message needs to say which
@@ -330,7 +330,7 @@ def build_graph(checkpointer):
 
 
 if __name__ == "__main__":
-    import database
+    from scheduler.db import database
 
     def full_week_availability():
         weekday = [True] * 24 + [False]
@@ -358,8 +358,9 @@ if __name__ == "__main__":
     # template - parse_xlsx() only reads specific cells (see xlsx_parser.py's
     # DAY_COLUMNS/NAME_CELL/HOURS_CELL), so a bare sheet with those cells set
     # is sufficient and keeps this self-test runnable without the template file.
-    import openpyxl
     import tempfile
+
+    import openpyxl
 
     tmpdir = tempfile.mkdtemp()
     paths = []

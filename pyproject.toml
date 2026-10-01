@@ -1,0 +1,16 @@
+[project]
+name = "service-desk-scheduler"
+version = "1.0.0"
+description = "Builds a semester service-desk work schedule from staff availability using a CP-SAT solver, with a human review loop."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

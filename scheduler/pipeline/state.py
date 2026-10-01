@@ -4,8 +4,8 @@ Shared state for the orchestration graph.
 
 from typing import TypedDict
 
-from model_input import LockedAssignment
-from schema import AvailabilitySubmission
+from scheduler.ingest.schema import AvailabilitySubmission
+from scheduler.solver.model_input import LockedAssignment
 
 
 class PipelineState(TypedDict, total=False):
@@ -20,12 +20,12 @@ class PipelineState(TypedDict, total=False):
     # --- validation stage ---
     validation_errors: list[str]
 
-    # --- roster-confirm stage (Section 4b, step 3) ---
+    # --- roster-confirm stage ---
     # availability_submissions index -> committed roster person id, set by
     # roster_confirm_node once the boss has confirmed/created each row.
     submission_roster_ids: dict[int, int]
 
-    # --- roster-completeness gate (Section 4b, step 5) ---
+    # --- roster-completeness gate ---
     # Empty once the gate has passed; only meaningful mid-interrupt.
     roster_incomplete_rows: list[dict]
 

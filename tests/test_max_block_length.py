@@ -1,11 +1,12 @@
 """
-Tier 1 - Rule 7 (hard, 6 hrs): no one's assigned block ever exceeds 6
+Rule 7 (hard, 6 hrs): no one's assigned block ever exceeds 6
 continuous hours (12 half-hour slots) in a single stretch.
 """
 
 from helpers import make_person, only_available
-from model_input import SolverInput
-from solve import solve
+
+from scheduler.solver.model_input import SolverInput
+from scheduler.solver.solve import solve
 
 
 def _longest_run(slots: list[int]) -> int:
@@ -14,7 +15,7 @@ def _longest_run(slots: list[int]) -> int:
         return 0
     ordered = sorted(slots)
     longest = current = 1
-    for prev, cur in zip(ordered, ordered[1:]):
+    for prev, cur in zip(ordered, ordered[1:], strict=False):
         current = current + 1 if cur == prev + 1 else 1
         longest = max(longest, current)
     return longest

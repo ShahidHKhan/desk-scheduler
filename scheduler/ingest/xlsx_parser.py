@@ -1,8 +1,7 @@
 """
 Parses a filled-in Blank_Schedule.xlsx submission into an AvailabilitySubmission.
 
-Cell layout confirmed by inspecting the actual template
-(/mnt/project/Blank_Schedule.xlsx):
+Cell layout, taken from the blank template every worker fills in:
   - Name:            C2 (merged C2:H2)
   - Hours requested:  J2 (merged J2:K2)
   - Day header row:   row 4 (Mon=C, Tue=E, Wed=G, Thu=I, Fri=K, Sat=M, Sun=O)
@@ -13,7 +12,7 @@ Cell layout confirmed by inspecting the actual template
 
 import openpyxl
 
-from schema import DAYS, TIME_SLOTS, AvailabilitySubmission, hours_range_warning, is_available_value
+from scheduler.ingest.schema import DAYS, TIME_SLOTS, AvailabilitySubmission, hours_range_warning, is_available_value
 
 # Column letter that holds each day's availability data (left cell of the merge)
 DAY_COLUMNS = {
@@ -82,7 +81,9 @@ def _parse_hours(value) -> int | None:
 if __name__ == "__main__":
     import sys
 
-    result = parse_xlsx(sys.argv[1] if len(sys.argv) > 1 else "/mnt/project/Blank_Schedule.xlsx")
+    if len(sys.argv) != 2:
+        sys.exit("usage: python -m scheduler.ingest.xlsx_parser <submission.xlsx>")
+    result = parse_xlsx(sys.argv[1])
     print(result)
     for day in DAYS:
         print(day, result.available_slots(day))

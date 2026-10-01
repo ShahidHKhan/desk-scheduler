@@ -1,5 +1,5 @@
 """
-Streamlit review UI for the orchestration graph (graph.py).
+Streamlit review UI for the orchestration graph (scheduler/pipeline/graph.py).
 
 Run with:
     streamlit run app.py
@@ -15,20 +15,29 @@ from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-import crud
-from crud import RosterValidationError
-from format_output import build_schedule_grid
-from graph import build_graph
-from model_input import DAYS, ROLES
-from models import ROLE_WEIGHTINGS
-
+# Must run before the scheduler imports below: scheduler.db.database reads
+# DATABASE_URL at import time to build its engine.
 load_dotenv()
+
+from scheduler.db import crud, database  # noqa: E402
+from scheduler.db.crud import RosterValidationError  # noqa: E402
+from scheduler.db.models import ROLE_WEIGHTINGS  # noqa: E402
+from scheduler.pipeline.format_output import build_schedule_grid  # noqa: E402
+from scheduler.pipeline.graph import build_graph  # noqa: E402
+from scheduler.solver.model_input import DAYS, ROLES  # noqa: E402
 
 CHECKPOINT_DB = "graph_checkpoints.db"
 # Single-user tool: one in-flight pipeline run at a time is an accepted
 # simplification, not an oversight - a fixed thread_id means every
 # invoke/resume in this app talks to the same run.
 THREAD_ID = "main"
+
+
+@st.cache_resource
+def ensure_schema() -> None:
+    """Create the roster table (and any newly added columns) once per
+    process, so a fresh database works without a separate setup step."""
+    database.init_db()
 
 
 @st.cache_resource
@@ -100,7 +109,9 @@ def render_roster_tab():
             with st.form(f"edit_{person.id}"):
                 initials = st.text_input("Initials", value=person.initials or "")
                 role_weighting_options = ["(unset)"] + list(ROLE_WEIGHTINGS)
-                current_role_weighting = person.role_weighting if person.role_weighting in ROLE_WEIGHTINGS else "(unset)"
+                current_role_weighting = (
+                    person.role_weighting if person.role_weighting in ROLE_WEIGHTINGS else "(unset)"
+                )
                 role_weighting = st.selectbox(
                     "Role weighting", role_weighting_options,
                     index=role_weighting_options.index(current_role_weighting),
@@ -392,6 +403,7 @@ def require_login() -> None:
 
 st.set_page_config(page_title="Service Desk Scheduler", layout="wide")
 require_login()
+ensure_schema()
 
 st.title("Service Desk Scheduler")
 

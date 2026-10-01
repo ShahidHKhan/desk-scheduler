@@ -2,20 +2,19 @@
 Match parsed availability submissions against the existing roster by name.
 
 Exact/case-insensitive matching only - deliberately not fuzzy. The human
-confirm step (Phase 4/5) catches near-misses like "S. Khan" vs "Shahid
-Khan" itself, so a fuzzy-matching dependency here would just add
-complexity for a case a human already has to review anyway (see
-Schedule_Optimizer_Project_Notes.md Section 4b, step 3).
+confirm step in the pipeline catches near-misses like "J. Doe" vs "Jane
+Doe" itself, so a fuzzy-matching dependency here would just add
+complexity for a case a human already has to review anyway.
 
-Ingestion proposes; it never writes to the roster. Phase 1's
+Ingestion proposes; it never writes to the roster.
 crud.upsert_from_submission() is what actually commits, after a human
 confirms each row (see graph.py's roster_confirm_node).
 """
 
 from dataclasses import dataclass
 
-from models import Roster
-from schema import AvailabilitySubmission
+from scheduler.db.models import Roster
+from scheduler.ingest.schema import AvailabilitySubmission
 
 
 @dataclass

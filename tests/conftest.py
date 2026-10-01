@@ -13,9 +13,10 @@ import tempfile
 _tmpdir = tempfile.mkdtemp(prefix="scheduler_pytest_")
 os.environ["DATABASE_PATH"] = os.path.join(_tmpdir, "test_roster.db")
 
-import pytest
-from dotenv import load_dotenv
-from sqlalchemy import delete
+# Imports below deliberately follow the env setup above (E402).
+import pytest  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
+from sqlalchemy import delete  # noqa: E402
 
 # Loaded after DATABASE_PATH above so the test DB path isn't clobbered
 # (load_dotenv() never overrides an already-set env var) - but still
@@ -24,15 +25,14 @@ from sqlalchemy import delete
 # the app itself.
 load_dotenv()
 
-# DATABASE_URL (Phase 7) has no prior value in os.environ, so the
+# DATABASE_URL has no prior value in os.environ, so the
 # load_dotenv() call above WILL pull the real Supabase URL in from .env if
 # it's set there for the deployed app. Tests must never run against that -
 # see database.py's DATABASE_URL-over-DATABASE_PATH fallback - so drop it
 # unconditionally before database.py is imported and binds its engine.
 os.environ.pop("DATABASE_URL", None)
 
-import database
-import models
+from scheduler.db import database, models  # noqa: E402
 
 database.init_db()
 

@@ -1,14 +1,11 @@
 """
 Parses a submitted PDF into an AvailabilitySubmission.
 
-DESIGN NOTE (important context for whoever picks this up):
-The first PDF sample we looked at (ShahidKhan_Spring2026S.pdf) behaved like
-a scanned/rasterized page - pdfplumber couldn't extract any positioned
-words from it at all. A second, later sample ("Shahid_Khan Fall26
-Schedule.pdf") turned out to be a genuine digital-native export of the
-same schedule template - 153 positioned words, real vector gridlines,
-exact coordinates - and _reconstruct_grid() below is calibrated against
-that one. So both cases are real and this file has to handle either:
+Real submissions arrive in two PDF flavors. Some are scanned/rasterized
+pages where pdfplumber can't extract any positioned words at all. Others
+are digital-native exports of the schedule template (~150 positioned
+words, real vector gridlines, exact coordinates), which _reconstruct_grid()
+below is calibrated against. This module handles either:
   1. Try to extract words WITH their (x, y) positions via pdfplumber.
   2. If that yields enough positioned words to confidently reconstruct
      the day/time grid, do so - this is the deterministic, cheap path.
@@ -16,16 +13,15 @@ that one. So both cases are real and this file has to handle either:
      reconstruct the grid with any confidence, raise NeedsVisionFallback
      instead of guessing. The caller (router.py) decides what to do next.
 
-CONFIDENCE THRESHOLD: MIN_POSITIONED_WORDS = 20. Still not rigorously
-calibrated (we only have one data point on each side), but the two real
-samples land nowhere near each other (~0 words for the scanned one vs.
-153 for the digital one), so 20 is a safe conservative cutoff between
-them. Revisit if a borderline case ever shows up.
+CONFIDENCE THRESHOLD: MIN_POSITIONED_WORDS = 20. Calibrated on one sample
+of each kind, which land nowhere near each other (~0 words for the scan
+vs. ~150 for the digital export), so 20 is a conservative cutoff. Revisit
+if a borderline case ever shows up.
 """
 
 from dataclasses import dataclass
 
-from schema import DAYS, TIME_SLOTS, AvailabilitySubmission, hours_range_warning, is_available_value
+from scheduler.ingest.schema import DAYS, TIME_SLOTS, AvailabilitySubmission, hours_range_warning, is_available_value
 
 MIN_POSITIONED_WORDS = 20  # see confidence threshold note above
 
@@ -68,8 +64,8 @@ def _extract_positioned_words(path: str) -> list[_PositionedWord]:
     """
     try:
         import pdfplumber
-    except ImportError:
-        raise RuntimeError("pdfplumber is required: pip install pdfplumber")
+    except ImportError as e:
+        raise RuntimeError("pdfplumber is required: pip install pdfplumber") from e
 
     try:
         with pdfplumber.open(path) as pdf:
@@ -88,9 +84,8 @@ def _extract_positioned_words(path: str) -> list[_PositionedWord]:
 def _reconstruct_grid(path: str, words: list[_PositionedWord]) -> AvailabilitySubmission:
     """Cluster positioned words into the day/time grid by coordinates.
 
-    Calibrated against "Shahid_Khan Fall26 Schedule.pdf", a genuine
-    digital-native export of the same schedule template xlsx_parser.py
-    reads. That PDF's vector gridlines gave exact day-column boundaries
+    Calibrated against a digital-native PDF export of the same schedule
+    template xlsx_parser.py reads. That PDF's vector gridlines gave exact day-column boundaries
     (via page.rects), and its time-label column gave exact row y0
     positions - both hardcoded below, mirroring how xlsx_parser.py
     hardcodes DAY_COLUMNS/FIRST_SLOT_ROW for its own fixed template.
@@ -163,7 +158,7 @@ def _reconstruct_grid(path: str, words: list[_PositionedWord]) -> AvailabilitySu
 
 
 # Day-column x-ranges, read off the PDF's vector gridlines (page.rects)
-# in "Shahid_Khan Fall26 Schedule.pdf" - each ~60pt wide, left-to-right
+# in the calibration PDF - each ~60pt wide, left-to-right
 # Mon through Sun.
 DAY_X_RANGES: dict[str, tuple[float, float]] = {
     "Mon": (116.0, 176.8),
@@ -211,7 +206,9 @@ def _match_slot_row(y: float) -> int | None:
 if __name__ == "__main__":
     import sys
 
-    target = sys.argv[1] if len(sys.argv) > 1 else "/mnt/project/ShahidKhan_Spring2026S.pdf"
+    if len(sys.argv) != 2:
+        sys.exit("usage: python -m scheduler.ingest.pdf_parser <submission.pdf>")
+    target = sys.argv[1]
     try:
         result = parse_pdf(target)
         print(result)

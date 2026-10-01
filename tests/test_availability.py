@@ -1,11 +1,12 @@
 """
-Tier 1 - Rule 3 (hard): nobody is ever assigned to a slot they didn't mark
+Rule 3 (hard): nobody is ever assigned to a slot they didn't mark
 available.
 """
 
 from helpers import generous_roster, make_person, only_available
-from model_input import SolverInput
-from solve import solve
+
+from scheduler.solver.model_input import SolverInput
+from scheduler.solver.solve import solve
 
 
 def test_no_assignment_falls_outside_marked_availability():

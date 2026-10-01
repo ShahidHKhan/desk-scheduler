@@ -1,16 +1,13 @@
 """
 Entry point for ingestion: routes a submitted file to the right parser.
 
-    from router import ingest
-    submission = ingest("/path/to/ShahidKhan_Spring2026S.xlsx")
+    from scheduler.ingest.router import ingest
+    submission = ingest("/path/to/JaneDoe_Fall.xlsx")
 
 _vision_fallback() calls Gemini (Google AI Studio) to read scanned/
 image-based PDF submissions that pdf_parser.py's text-layer extraction
-can't handle. Needs GEMINI_API_KEY set (see .env.example). Untested
-against a real scanned submission (we only have text-layer PDF samples
-so far) - if Gemini's output doesn't parse cleanly, this fails loudly
-rather than guessing. See pdf_parser.py's design note for the two real
-samples this pipeline was built against.
+can't handle. Needs GEMINI_API_KEY set (see .env.example). If Gemini's
+output doesn't parse cleanly, this fails loudly rather than guessing.
 """
 
 import json
@@ -19,9 +16,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from pdf_parser import NeedsVisionFallback, parse_pdf
-from schema import DAYS, TIME_SLOTS, AvailabilitySubmission, hours_range_warning
-from xlsx_parser import parse_xlsx
+from scheduler.ingest.pdf_parser import NeedsVisionFallback, parse_pdf
+from scheduler.ingest.schema import DAYS, TIME_SLOTS, AvailabilitySubmission, hours_range_warning
+from scheduler.ingest.xlsx_parser import parse_xlsx
 
 load_dotenv()  # reads .env into os.environ (GEMINI_API_KEY, etc.)
 

@@ -35,3 +35,13 @@ Thumbs.db
 # Git
 .git/
 .gitignore
+
+# Private planning notes, handoffs and real sample data - kept local only
+dev-notes/
+
+# Not needed at runtime
+tests/
+scripts/
+.pytest_cache/
+requirements-dev.txt
+README.md

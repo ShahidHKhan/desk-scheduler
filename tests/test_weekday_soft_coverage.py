@@ -1,8 +1,7 @@
 """
-Step 3 (Tier 2) - weekday coverage (2 tech + 2 assistant) as currently
-implemented: a soft, heavily-penalized target rather than a hard
-constraint (Phase 3 decision - see build_model.py). Covers the two
-things that decision needs to hold up under test:
+Weekday coverage (2 tech + 2 assistant) is a soft, heavily-penalized
+target rather than a hard constraint (see build_model.py). Covers the two
+things that design needs to hold up under test:
 
 1. When full 2+2 coverage is achievable, the solver actually achieves it
    (the penalty weight is high enough to prefer full coverage whenever
@@ -16,8 +15,9 @@ things that decision needs to hold up under test:
 import re
 
 from helpers import full_week_availability, generous_roster, make_person
-from model_input import DAYS, OPERATING_SLOTS, SolverInput, WEEKDAYS
-from solve import solve
+
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, WEEKDAYS, SolverInput
+from scheduler.solver.solve import solve
 
 
 def test_full_weekday_coverage_is_achieved_when_possible():

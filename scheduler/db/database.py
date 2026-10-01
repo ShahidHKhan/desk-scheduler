@@ -1,8 +1,8 @@
 """
 Database engine and session setup.
 
-Run this file directly to create roster.db with the roster table:
-    python database.py
+Run this module directly to create roster.db with the roster table:
+    python -m scheduler.db.database
 """
 
 import os
@@ -10,11 +10,11 @@ import os
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from models import Base
+from scheduler.db.models import Base
 
 # DATABASE_URL (see .env.example), when set, points at the deployed Postgres
-# (Supabase) instance - used in production (Phase 7). When unset, falls back
-# to local SQLite via DATABASE_PATH, same as before Phase 7: tests set
+# (Supabase) instance used in production. When unset, falls back to local
+# SQLite via DATABASE_PATH: tests set
 # DATABASE_PATH (see tests/conftest.py) and never DATABASE_URL, so the
 # pytest suite is unaffected by this fallback and keeps running against
 # local SQLite regardless of this branch.

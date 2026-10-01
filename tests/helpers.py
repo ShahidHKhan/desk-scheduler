@@ -1,13 +1,11 @@
 """
 Shared synthetic-roster builders for the pytest suite.
 
-Kept separate from conftest.py fixtures since most Tier 1 tests (see
-PHASE_6_BUILD_INSTRUCTIONS.md, Step 1) build a SolverInput directly and
-never touch the DB at all - only the Step 0 regression test needs
-crud/database.
+Kept separate from conftest.py fixtures since most rule tests build a
+SolverInput directly and never touch the DB at all.
 """
 
-from model_input import NUM_SLOTS, Person
+from scheduler.solver.model_input import NUM_SLOTS, Person
 
 
 def full_week_availability() -> dict[str, list[bool]]:

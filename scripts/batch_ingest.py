@@ -7,7 +7,11 @@ API key, etc.) and per-submission warnings (unfilled name, out-of-range
 hours, etc.) are meant for human review before anything gets linked to
 the roster.
 
-    from batch_ingest import ingest_folder
+Usage, from the repo root:
+    python -m scripts.batch_ingest path/to/submissions
+
+Or from code:
+    from scripts.batch_ingest import ingest_folder
     result = ingest_folder("/path/to/submissions")
     result.submissions  # list[AvailabilitySubmission] that parsed
     result.failures     # list[(path, error message)] that didn't
@@ -16,8 +20,8 @@ the roster.
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from router import ingest
-from schema import AvailabilitySubmission
+from scheduler.ingest.router import ingest
+from scheduler.ingest.schema import AvailabilitySubmission
 
 SUPPORTED_SUFFIXES = {".xlsx", ".pdf"}
 
@@ -52,7 +56,9 @@ def ingest_folder(folder: str) -> BatchResult:
 if __name__ == "__main__":
     import sys
 
-    folder = sys.argv[1] if len(sys.argv) > 1 else "."
+    if len(sys.argv) != 2:
+        sys.exit("usage: python -m scripts.batch_ingest <folder>")
+    folder = sys.argv[1]
     result = ingest_folder(folder)
 
     print(f"Ingested {len(result.submissions)} submission(s), {len(result.failures)} failure(s)")

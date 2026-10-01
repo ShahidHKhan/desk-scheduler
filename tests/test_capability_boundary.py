@@ -1,11 +1,12 @@
 """
-Tier 1 - Rule 2 (hard): an Assistant-only person is never assigned a tech
+Rule 2 (hard): an Assistant-only person is never assigned a tech
 slot, even when tech coverage is short and they're available to "help".
 """
 
 from helpers import make_person
-from model_input import SolverInput
-from solve import solve
+
+from scheduler.solver.model_input import SolverInput
+from scheduler.solver.solve import solve
 
 
 def test_assistant_only_never_assigned_tech_role_even_when_tech_coverage_is_short():

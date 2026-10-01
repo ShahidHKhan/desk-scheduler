@@ -1,10 +1,10 @@
 """
-Step 4 - LLM-as-judge for infeasibility explanations.
+LLM-as-judge for infeasibility explanations.
 
 The cross-referencing logic (claims -> mismatches -> accurate/not) is
 fully deterministic and is what actually decides the accuracy verdict
 (see judge.py's module docstring) - it's tested here with an injected
-fake `extractor`, shaped like a real Claude tool-call response, so the
+fake `extractor`, shaped like a real model response, so the
 logic that matters is verified without needing network access or an API
 key. test_judge_live_api_call_end_to_end below additionally exercises
 the real model call when a key is available.
@@ -13,11 +13,11 @@ the real model call when a key is available.
 import os
 
 import pytest
-
-from diagnose import diagnose_coverage_gaps_detailed
 from helpers import make_person, only_available
-from judge import judge_explanation
-from model_input import SolverInput
+
+from scheduler.evals.judge import judge_explanation
+from scheduler.solver.diagnose import diagnose_coverage_gaps_detailed
+from scheduler.solver.model_input import SolverInput
 
 
 def _availability_and_capability_scenario():
@@ -121,7 +121,7 @@ def test_judge_flags_corrupted_explanation_as_inaccurate():
     ),
 )
 def test_judge_live_api_call_end_to_end():
-    """One real Gemini API call per Step 2 scenario - actually exercises
+    """One real Gemini API call per diagnosis scenario - actually exercises
     the model's own claim extraction and clarity judgment (the fake
     extractor above only tests the cross-reference logic downstream of
     it). Only runs when a real key is configured.

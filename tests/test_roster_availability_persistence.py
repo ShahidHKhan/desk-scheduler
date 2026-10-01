@@ -1,5 +1,5 @@
 """
-Tier 1 - Step 0 regression: re-uploading one person's corrected
+Regression test: re-uploading one person's corrected
 availability file must not drop everyone else's availability from the
 solve.
 
@@ -19,12 +19,12 @@ has _build_solver_input() fall back to that persisted value for anyone not
 part of the current run.
 """
 
-import crud
-import database
-from graph import _build_solver_input
 from helpers import full_week_availability
-from schema import AvailabilitySubmission
-from solve import solve as run_solver
+
+from scheduler.db import crud, database
+from scheduler.ingest.schema import AvailabilitySubmission
+from scheduler.pipeline.graph import _build_solver_input
+from scheduler.solver.solve import solve as run_solver
 
 
 def test_reupload_of_one_person_does_not_drop_others_availability():
@@ -78,11 +78,11 @@ def test_reupload_of_one_person_does_not_drop_others_availability():
     people_by_name = {p.name: p for p in data2.people}
     assert any(people_by_name["Alice"].availability.get(day) for day in people_by_name["Alice"].availability), (
         "Alice's availability was empty after a re-upload that didn't include her - "
-        "the Step 0 roster-scoping bug"
+        "the roster-scoping bug"
     )
     assert any(people_by_name["Cara"].availability.get(day) for day in people_by_name["Cara"].availability), (
         "Cara's availability was empty after a re-upload that didn't include her - "
-        "the Step 0 roster-scoping bug"
+        "the roster-scoping bug"
     )
 
     result2 = run_solver(data2, time_limit_seconds=15)

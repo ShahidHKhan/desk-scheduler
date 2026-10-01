@@ -1,10 +1,8 @@
 """
 SQLAlchemy models for the Service Desk Schedule Optimizer.
 
-Phase 1: roster / attribute data model.
-See Schedule_Optimizer_Project_Notes.md, Section 7, for the decisions
-this file implements (flat single table, no semester history, CHECK
-constraints for fixed-category fields).
+A single flat roster table: no semester history, and CHECK constraints
+on the fixed-category fields so bad values can't be stored.
 """
 
 import json
@@ -23,24 +21,24 @@ class Base(DeclarativeBase):
 ROLE_WEIGHTINGS = ("assistant_only", "hybrid_new", "hybrid_2nd", "tech_only")
 
 # The four fields the submitted availability forms never capture - set by
-# the boss directly on the roster (see Schedule_Optimizer_Project_Notes.md
-# Section 4b). A row missing any of these is "incomplete" and blocks solve.
+# the scheduler directly on the roster. A row missing any of these is
+# "incomplete" and blocks solve.
 MANUAL_FIELDS = ("role_weighting", "experience_rating", "proximity", "initials")
 
 
 class Roster(Base):
     """One row per service desk worker.
 
-    Flat table, no semester history (confirmed decision): each new
+    Flat table, no semester history: each new
     semester, hours_requested (and role_weighting, if someone has
     leveled up from hybrid_new to hybrid_2nd) gets overwritten
     directly on the person's existing row rather than versioned.
 
     The roster is now generated FROM bulk-uploaded availability
-    submissions rather than typed in by hand first (Section 4b). A
+    submissions rather than typed in by hand first. A
     submission only ever populates name + hours_requested; the four
     MANUAL_FIELDS are nullable here specifically so a freshly-created
-    row can sit "incomplete" until the boss fills them in by hand -
+    row can sit "incomplete" until they're filled in by hand -
     see is_complete below and crud.upsert_from_submission().
     """
 
@@ -50,9 +48,8 @@ class Roster(Base):
 
     name: Mapped[str] = mapped_column(String, nullable=False)
 
-    # Short initials used on the master schedule grid (e.g. "SK" for
-    # Shahid Khan) — needed to match roster entries against the
-    # existing master schedule format your boss already works with.
+    # Short initials used on the master schedule grid (e.g. "JD" for
+    # Jane Doe), matching the existing hand-built master schedule format.
     initials: Mapped[str | None] = mapped_column(String, nullable=True)
 
     role_weighting: Mapped[str | None] = mapped_column(String, nullable=True)

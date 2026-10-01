@@ -1,29 +1,23 @@
 """
-Step 4 - narrow LLM-as-judge for infeasibility explanations (see
-PHASE_6_BUILD_INSTRUCTIONS.md, Step 4).
+Narrow LLM-as-judge for infeasibility explanations. Evaluation tooling
+only - it runs in the test suite, never in the app.
 
-Uses Gemini rather than the build doc's original Claude suggestion -
-GEMINI_API_KEY is the only LLM credential actually available for this
-project right now (it already does the pdf_parser.py vision-fallback
-job; see router.py). Deviation from Schedule_Optimizer_Project_Notes.md
-Section 7's "second Claude API call" note - flagged there for the notes
-doc to catch up, not silently substituted.
+Uses Gemini (gemini-2.5-flash), the same credential as the ingestion
+vision fallback in router.py.
 
-Scope, deliberately narrow: judges ONE thing - a boss-facing explanation
-of why a schedule is infeasible - not the schedule itself. Judging
-schedule quality with an LLM was explicitly ruled out earlier in the
-project (Schedule_Optimizer_Project_Notes.md, Section 5); Step 1's
-deterministic suite owns correctness, permanently.
+Scope, deliberately narrow: judges ONE thing - a user-facing explanation
+of why a schedule is infeasible - not the schedule itself. Schedule
+correctness is owned by the deterministic pytest suite, never by an LLM.
 
 Split into two independently-checkable questions:
   (a) factual accuracy - does every specific claim the explanation makes
-      (this person, this slot, this reason) match Step 2's diagnosis
-      data? The model's ONLY job here is extraction: pull out what the
+      (this person, this slot, this reason) match diagnose.py's
+      structured diagnosis? The model's ONLY job here is extraction: pull out what the
       explanation claims (person, slot, one of three canonical reason
       codes). Whether each claim is true is decided by plain Python
       cross-referencing those claims against SlotDiagnosis - never by
       the model's own say-so - so "accurate" can't be a rubber stamp.
-  (b) clarity - would a non-technical reader (the boss) understand why
+  (b) clarity - would a non-technical reader understand why
       the schedule failed without needing to know what CP-SAT or a
       constraint solver is? This one is a genuine judgment call, so it's
       the model's call, not cross-referenced.
@@ -31,10 +25,10 @@ Split into two independently-checkable questions:
 
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
-from diagnose import SlotDiagnosis
+from scheduler.solver.diagnose import SlotDiagnosis
 
 JUDGE_MODEL = "gemini-2.5-flash"
 
@@ -96,7 +90,7 @@ non-technical reader would understand it.
 
 @dataclass
 class ClaimMismatch:
-    """One claim the explanation made that doesn't match Step 2's ground truth."""
+    """One claim the explanation made that doesn't match the diagnosis ground truth."""
 
     person_name: str
     day: str
@@ -144,8 +138,8 @@ def judge_explanation(
     explanation_text: str,
     extractor: Callable[[str], dict] = _extract_claims_and_clarity,
 ) -> JudgeResult:
-    """Judge `explanation_text` (boss-facing text, e.g. explain_node's
-    output) against `diagnoses` (Step 2's ground truth for the same solve).
+    """Judge `explanation_text` (user-facing text, e.g. explain_node's
+    output) against `diagnoses` (diagnose.py's ground truth for the same solve).
 
     `extractor` defaults to the real Gemini API call; tests inject a fake
     to exercise the cross-referencing logic below without a live API key.

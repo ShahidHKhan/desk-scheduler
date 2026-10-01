@@ -1,11 +1,12 @@
 """
-Tier 1 - Weekend coverage (hard): every weekend slot has exactly one
+Weekend coverage (hard): every weekend slot has exactly one
 person assigned, and that person is tech-capable. No exceptions.
 """
 
 from helpers import generous_roster
-from model_input import OPERATING_SLOTS, SolverInput, WEEKEND_DAYS
-from solve import solve
+
+from scheduler.solver.model_input import OPERATING_SLOTS, WEEKEND_DAYS, SolverInput
+from scheduler.solver.solve import solve
 
 
 def test_every_weekend_slot_has_exactly_one_tech_capable_person():

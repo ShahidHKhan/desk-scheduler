@@ -1,13 +1,10 @@
 """
-Input shape for the solver. Bridges Phase 1 (roster/models.py) and
-Phase 2 (ingestion/schema.py's AvailabilitySubmission) into what the
-CP-SAT model actually consumes.
+Input shape for the solver: what the CP-SAT model actually consumes.
 
 Deliberately decoupled from the SQLAlchemy Roster model and the
 ingestion parsers - the solver shouldn't need to know about databases
-or file parsing, just plain data. Whatever wires Phase 1 + Phase 2
-output into this shape (matching people by name/id) is a separate,
-not-yet-built piece - see PHASE3_HANDOFF.md.
+or file parsing, just plain data. pipeline/graph.py's
+_build_solver_input() converts roster rows into this shape.
 """
 
 from dataclasses import dataclass, field
@@ -48,8 +45,8 @@ class Person:
     # availability[day][slot_index] = True if this person marked available
     availability: dict[str, list[bool]]
     # Compact initials for the output grid (e.g. "SK") - matches the real
-    # master schedule's convention. Optional since roster/solver code that
-    # predates Phase 5 doesn't set it.
+    # master schedule's convention. Optional so the solver can run
+    # without it (e.g. in tests).
     initials: str = ""
 
     def can_work_tech(self) -> bool:
@@ -65,7 +62,7 @@ class LockedAssignment:
 
     Injected as a hard constraint in build_model.py - always wins over the
     solver's own preferences. Validated by locks.validate_locks() before
-    ever reaching the model (see PHASE5_DEV_INSTRUCTIONS.md).
+    ever reaching the model.
     """
 
     person_id: int

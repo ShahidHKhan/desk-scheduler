@@ -1,15 +1,14 @@
 """
 Builds the CP-SAT model for the service desk schedule.
 
-See PHASE3_HANDOFF.md for the full design rationale (why per-slot
-binaries instead of interval variables, the min-block-length
-implementation approach, and what's still first-pass/unfinished in the
-objective function).
+Per-slot boolean variables rather than interval variables: every rule is
+phrased per half-hour slot, so booleans keep each constraint a direct
+translation of the rule. Rule numbers below match the README.
 """
 
 from ortools.sat.python import cp_model
 
-from model_input import DAYS, NUM_SLOTS, OPERATING_SLOTS, ROLES, WEEKDAYS, WEEKEND_DAYS, SolverInput
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, ROLES, WEEKDAYS, WEEKEND_DAYS, SolverInput
 
 
 def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
@@ -25,7 +24,7 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
                 for role in ROLES:
                     x[p.id, day, slot, role] = model.NewBoolVar(f"x_{p.id}_{day}_{slot}_{role}")
 
-    # --- Hard constraint: manual locks always win (Phase 5) ---
+    # --- Hard constraint: manual locks always win ---
     # Locks are pre-validated by locks.validate_locks() before this point - not
     # re-validated here, that's locks.py's job. A lock referencing a day/slot/role
     # combo that isn't in `x` (i.e. outside operating hours) raises KeyError, which
@@ -127,7 +126,7 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
     # min_block_slots consecutive slots to also be worked - UNLESS fewer
     # than min_block_slots slots remain in the day's operating window, in
     # which case a full-length block literally can't fit. That's the
-    # "trailing sliver" case (PHASE3_HANDOFF.md finding #2): allowed, not
+    # "trailing sliver" case: allowed, not
     # forbidden, but tracked in sliver_starts below so the objective can
     # discourage it instead of silently accepting it for free.
     sliver_starts = []
@@ -158,9 +157,8 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
     # Proportional fairness, first pass: minimize the maximum, across all
     # people, of (hours_requested - hours_assigned) / hours_requested.
     # Scaled to integers (CP-SAT requirement) as per-mille (0-1000).
-    # NOTE: role-weighting ratio targets and proximity tiebreaking (also
-    # Rule 5/Rule 2 soft components) are NOT yet in this objective - see
-    # PHASE3_HANDOFF.md for why and what's needed to add them.
+    # NOTE: role-weighting ratio targets and proximity tiebreaking (the
+    # Rule 2/Rule 5 soft components) are NOT yet in this objective.
     max_shortfall_permille = model.NewIntVar(0, 1000, "max_shortfall_permille")
     for p in people:
         total_slots = [work[p.id, day, slot] for day in DAYS for slot in OPERATING_SLOTS[day]]
@@ -172,8 +170,7 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
                 (requested_slots - assigned_slots) * 1000 <= max_shortfall_permille * requested_slots
             )
 
-    # Soft penalty on trailing slivers (PHASE3_HANDOFF.md finding #2,
-    # option 3): each block that starts too close to closing to reach the
+    # Soft penalty on trailing slivers: each block that starts too close to closing to reach the
     # full min_block_slots length adds SLIVER_PENALTY_WEIGHT to the
     # objective. Deliberately small relative to max_shortfall_permille's
     # 0-1000 range - hours fairness is the primary business rule, this is

@@ -1,15 +1,16 @@
 """
-Step 2 - infeasibility-diagnosis layer. When a weekend slot has zero
+Infeasibility diagnosis. When a weekend slot has zero
 valid tech candidates, the diagnosis must name the failing slot(s) and
 attribute each ruled-out candidate's exclusion to the actual reason
 (availability, capability, or hours-cap) - not a generic "infeasible"
 message, and not the wrong reason.
 """
 
-from diagnose import diagnose_coverage_gaps, diagnose_coverage_gaps_detailed
 from helpers import make_person, only_available
-from model_input import SolverInput
-from solve import solve
+
+from scheduler.solver.diagnose import diagnose_coverage_gaps, diagnose_coverage_gaps_detailed
+from scheduler.solver.model_input import SolverInput
+from scheduler.solver.solve import solve
 
 
 def test_no_weekend_available_tech_capable_person_names_slot_and_real_reasons():

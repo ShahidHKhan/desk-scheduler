@@ -1,8 +1,8 @@
 """
 Pre-solve and post-solve coverage diagnosis.
 
-The CP-SAT model reports a bare INFEASIBLE with no indication of why
-(PHASE3_HANDOFF.md finding #1). diagnose_coverage_gaps() catches the
+The CP-SAT model reports a bare INFEASIBLE with no indication of why.
+diagnose_coverage_gaps() catches the
 clearest and most common pre-solve cause up front: a weekend slot where
 zero tech-capable, under-hour-cap people are available at all - weekend
 coverage is still a hard constraint (exactly 1 tech-role person, no
@@ -28,8 +28,8 @@ from dataclasses import dataclass
 
 from ortools.sat.python import cp_model
 
-from model_input import DAYS, OPERATING_SLOTS, Person, WEEKEND_DAYS, SolverInput
-from schema import TIME_SLOTS
+from scheduler.ingest.schema import TIME_SLOTS
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, WEEKEND_DAYS, Person, SolverInput
 
 WEEKEND_TECHS_REQUIRED = 1
 
@@ -38,8 +38,8 @@ WEEKEND_TECHS_REQUIRED = 1
 class CandidateRuling:
     """Why one specific person was ruled out as a candidate for one
     specific unsatisfiable slot. `reason` is a stable machine-checkable
-    code (Step 4's LLM judge cross-references this against the judged
-    explanation); `detail` is the boss-readable phrase.
+    code (evals/judge.py cross-references this against the judged
+    explanation); `detail` is the human-readable phrase.
     """
 
     person_name: str

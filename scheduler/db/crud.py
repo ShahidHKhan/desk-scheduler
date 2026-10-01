@@ -2,17 +2,17 @@
 CRUD functions for the roster table.
 
 Plain functions, not tied to any particular UI framework, so the
-Phase 5 review UI (or a quick CLI/script in the meantime) can call
-these directly. Each function opens and closes its own session.
+Streamlit app, the pipeline graph, and scripts can all call them
+directly. Each function opens and closes its own session.
 """
 
 import json
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 
-from database import get_session
-from models import MANUAL_FIELDS, Roster, ROLE_WEIGHTINGS
+from scheduler.db.database import get_session
+from scheduler.db.models import MANUAL_FIELDS, ROLE_WEIGHTINGS, Roster
 
 
 class RosterValidationError(Exception):
@@ -75,8 +75,8 @@ def list_roster() -> list[Roster]:
 def list_incomplete_roster() -> list[Roster]:
     """Return roster rows missing any of the four boss-set-manually fields.
 
-    Backs the Phase 4 solve-time hard gate and the Phase 5 roster panel's
-    "Incomplete" filter.
+    Backs the pipeline's pre-solve completeness gate and the Roster tab's
+    "Show incomplete only" filter.
     """
     session = get_session()
     try:
@@ -95,7 +95,7 @@ def upsert_from_submission(
     hours_requested: int | None,
     availability: dict[str, list[bool]] | None = None,
 ) -> Roster:
-    """Commit one confirmed roster-confirm decision (see Section 4b, step 3).
+    """Commit one confirmed roster-confirm decision (see graph.roster_confirm_node).
 
     person_id given (a confirmed or manually-chosen match): update ONLY
     hours_requested and availability on that existing row. Never touches
@@ -108,8 +108,8 @@ def upsert_from_submission(
     so that a solve triggered by a LATER run - one that doesn't re-upload
     this person's file - still has their availability to work with. Without
     this, only whoever's file was part of the current run would have any
-    availability at solve time; see Schedule_Optimizer_Project_Notes.md /
-    the Phase 6 regression test for the bug this caused.
+    availability at solve time; see
+    tests/test_roster_availability_persistence.py for the regression test.
 
     person_id None ("no match, treat as new"): create a fresh row with
     name + hours_requested (+ availability) set and the four manual fields

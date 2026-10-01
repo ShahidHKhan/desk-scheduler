@@ -6,12 +6,11 @@ import os
 
 from ortools.sat.python import cp_model
 
-from build_model import build_model
-from diagnose import diagnose_coverage_gaps, summarize_coverage_shortfalls
-from model_input import DAYS, OPERATING_SLOTS, SolverInput
+from scheduler.solver.build_model import build_model
+from scheduler.solver.diagnose import diagnose_coverage_gaps, summarize_coverage_shortfalls
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, SolverInput
 
-# Parallel search workers - safe, free speedup (PHASE3_HANDOFF.md
-# "Performance note"). Capped at 8 since CP-SAT's returns diminish past
+# Parallel search workers - safe, free speedup. Capped at 8 since CP-SAT's returns diminish past
 # that for a model this size, and we don't want to hog every core on a
 # shared machine.
 NUM_SEARCH_WORKERS = min(8, os.cpu_count() or 1)
@@ -77,7 +76,7 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
 
 
 if __name__ == "__main__":
-    from model_input import Person
+    from scheduler.solver.model_input import Person
 
     # Realistic-scale synthetic test - NOT real data, but sized like
     # the actual project (~20 people) rather than a toy example, since

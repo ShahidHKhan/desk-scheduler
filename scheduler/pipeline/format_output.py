@@ -1,13 +1,13 @@
 """
 Builds the master-schedule-grid view of a solver result: TIME_SLOTS x
 DAYS, "Closed" outside operating hours - matching the real
-Blank_Schedule.xlsx template's own convention (verified in Phase 2).
+Blank_Schedule.xlsx template's own convention.
 """
 
 import pandas as pd
 
-from model_input import DAYS, OPERATING_SLOTS
-from schema import TIME_SLOTS
+from scheduler.ingest.schema import TIME_SLOTS
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS
 
 
 def build_schedule_grid(solve_result: dict, people_lookup: dict) -> pd.DataFrame:

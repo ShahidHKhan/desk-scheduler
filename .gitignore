@@ -31,3 +31,6 @@ Thumbs.db
 # Editors
 .vscode/
 .idea/
+
+# Private planning notes, handoffs and real sample data - kept local only
+dev-notes/

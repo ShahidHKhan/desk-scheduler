@@ -1,10 +1,11 @@
 """
-Tier 1 - Rule 1 (hard): nobody's total assigned hours exceed hours_requested.
+Rule 1 (hard): nobody's total assigned hours exceed hours_requested.
 """
 
 from helpers import make_person
-from model_input import SolverInput
-from solve import solve
+
+from scheduler.solver.model_input import SolverInput
+from scheduler.solver.solve import solve
 
 
 def test_assigned_hours_never_exceed_requested_hours():

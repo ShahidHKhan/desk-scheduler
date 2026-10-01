@@ -1,11 +1,12 @@
 """
-Tier 1 - Rule 4 (hard): no weekday slot ever has two rating-1 people
+Rule 4 (hard): no weekday slot ever has two rating-1 people
 working simultaneously.
 """
 
 from helpers import make_person, only_available
-from model_input import SolverInput
-from solve import solve
+
+from scheduler.solver.model_input import SolverInput
+from scheduler.solver.solve import solve
 
 
 def test_two_rating1_people_never_share_a_weekday_slot():
@@ -24,7 +25,9 @@ def test_two_rating1_people_never_share_a_weekday_slot():
         id=2, name="Rating1B", role_weighting="tech_only", experience_rating=1,
         hours_requested=20, availability=only_available("Wed", range(5, 10)),
     )
-    rating3_tech = make_person(id=3, name="Rating3Tech", role_weighting="tech_only", experience_rating=3, hours_requested=20)
+    rating3_tech = make_person(
+        id=3, name="Rating3Tech", role_weighting="tech_only", experience_rating=3, hours_requested=20
+    )
     asst1 = make_person(id=4, name="Asst1", role_weighting="assistant_only", hours_requested=20)
     asst2 = make_person(id=5, name="Asst2", role_weighting="assistant_only", hours_requested=20)
 

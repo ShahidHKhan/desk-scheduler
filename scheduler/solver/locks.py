@@ -8,7 +8,7 @@ effects, doesn't touch the CP-SAT model - so it's cheap to call before
 deciding whether to solve at all.
 """
 
-from model_input import DAYS, OPERATING_SLOTS, ROLES, SolverInput
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, ROLES, SolverInput
 
 
 def validate_locks(data: SolverInput) -> list[str]:
