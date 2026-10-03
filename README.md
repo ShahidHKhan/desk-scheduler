@@ -26,6 +26,7 @@ flowchart LR
 
 The pipeline is a [LangGraph](https://github.com/langchain-ai/langgraph) state graph. The hexagons are human-in-the-loop gates: the graph pauses with `interrupt()`, its state is saved by a checkpointer, and it resumes when the manager acts in the UI.
 
+- **Two sides, one sign-in.** Shared worker credentials open only the availability form. The manager's credentials open the scheduler. These are shared role passwords rather than user accounts, which fits a single desk. Unset or blank credentials never sign anyone in.
 - **In-app submissions.** Workers fill in a clickable weekly grid with their name, initials and hours. Each one is saved as a pending submission in its own table. The manager chooses which to include in a run, and from there they follow the same path as uploaded files, so nothing reaches the roster without the name-match confirmation.
 - **Ingestion** parses the fixed-layout xlsx template directly. Digital PDFs are rebuilt from word coordinates. Scanned PDFs go to Gemini vision, which must return strict JSON and fails loudly rather than guessing.
 - **Roster.** Submissions create or update roster rows with name, hours and availability. In-app submissions also supply initials, but never overwrite initials the manager already set. The manager fills in the rest: role, experience rating and proximity. Solving is blocked until every row is complete.
@@ -52,13 +53,14 @@ Rule numbers match the comments in `scheduler/solver/build_model.py`. The hybrid
 ## Project layout
 
 ```
-app.py                  Streamlit UI: Submit Availability, Roster, Import, Review & Edit, Output tabs
+app.py                  Streamlit UI: sign-in, worker availability form, manager scheduler tabs
 scheduler/
   db/                   SQLAlchemy roster model, engine setup, CRUD
   ingest/               xlsx / pdf parsers, Gemini vision fallback, in-app form, name matching
   solver/               CP-SAT model, solve, pre-solve diagnosis, lock validation
   pipeline/             LangGraph graph and state, schedule grid formatting
   evals/                LLM-as-judge for infeasibility explanations
+  ui/                   Drag-to-select availability grid (Streamlit custom component)
 scripts/batch_ingest.py Parse a folder of submissions from the command line
 tests/                  pytest suite
 Dockerfile, fly.toml    Container and Fly.io deployment
@@ -79,7 +81,8 @@ streamlit run app.py               # http://localhost:8501 (creates the roster t
 
 | Variable | Needed for |
 |----------|------------|
-| `APP_USERNAME`, `APP_PASSWORD` | The app's login screen |
+| `APP_USERNAME`, `APP_PASSWORD` | Shared worker sign-in: opens only the availability form |
+| `ADMIN_APP_USERNAME`, `ADMIN_APP_PASSWORD` | Manager sign-in: opens the scheduler (roster, imports, review, output) |
 | `GEMINI_API_KEY` | Scanned-PDF parsing and the live judge test (optional otherwise) |
 | `DATABASE_URL` | Postgres. Leave empty to use local SQLite (`DATABASE_PATH`, default `roster.db`) |
 | `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | Optional LangSmith tracing of the pipeline |
@@ -104,7 +107,7 @@ Tests always run against a throwaway SQLite database. `tests/conftest.py` drops 
 
 ## Deployment
 
-The app runs as a single Docker container on [Fly.io](https://fly.io), with the roster in [Supabase](https://supabase.com) Postgres. Secrets (`DATABASE_URL`, `GEMINI_API_KEY`, `APP_USERNAME`, `APP_PASSWORD`, LangSmith keys) are set with `flyctl secrets`. Machines stop when idle and start on the next request.
+The app runs as a single Docker container on [Fly.io](https://fly.io), with the roster in [Supabase](https://supabase.com) Postgres. Secrets (`DATABASE_URL`, `GEMINI_API_KEY`, `APP_USERNAME`, `APP_PASSWORD`, `ADMIN_APP_USERNAME`, `ADMIN_APP_PASSWORD`, LangSmith keys) are set with `flyctl secrets`. Machines stop when idle and start on the next request.
 
 ```bash
 flyctl deploy

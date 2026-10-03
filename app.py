@@ -1,10 +1,16 @@
 """
-Streamlit review UI for the orchestration graph (scheduler/pipeline/graph.py).
+Streamlit app with two sides behind one sign-in screen:
+
+- Workers (APP_USERNAME / APP_PASSWORD) see only the availability form.
+- The manager (ADMIN_APP_USERNAME / ADMIN_APP_PASSWORD) sees the scheduler:
+  roster, imports (including workers' in-app submissions), review/edit of
+  the solved schedule, and output. See scheduler/pipeline/graph.py.
 
 Run with:
     streamlit run app.py
 """
 
+import hmac
 import os
 import sqlite3
 import tempfile
@@ -96,11 +102,10 @@ def _resume_graph(resume_payload: dict, rerun: bool = True):
     return new_result
 
 
-def render_submit_tab():
+def render_availability_form():
     """Worker-facing availability form - the in-app alternative to filling
     in the xlsx template. Saves a pending submission; nothing touches the
     roster until the manager includes it in a pipeline run."""
-    st.subheader("Submit Availability")
     st.write(
         "Mark every half hour you could work this semester, then submit. "
         "The desk is open Mon–Thu 08:00–20:00, Fri 08:00–17:00, and Sat–Sun 12:00–17:00."
@@ -498,47 +503,91 @@ def render_output_tab():
     )
 
 
-def require_login() -> None:
-    """Blocks the entire app behind a username/password gate until
-    st.session_state marks the session authenticated. Credentials come from
-    APP_USERNAME/APP_PASSWORD (env var locally via .env, Fly secret in
-    production) - same storage pattern as HawkEye's Gradio auth, adapted to
-    Streamlit since it has no launch()-level auth of its own."""
-    if st.session_state.get("authenticated"):
-        return
+ADMIN, WORKER = "admin", "worker"
+# Which env vars hold each role's shared username/password. Set locally in
+# .env, and as Fly secrets in production.
+ROLE_CREDENTIALS = {
+    ADMIN: ("ADMIN_APP_USERNAME", "ADMIN_APP_PASSWORD"),
+    WORKER: ("APP_USERNAME", "APP_PASSWORD"),
+}
 
+
+def _credentials_match(role: str, username: str, password: str) -> bool:
+    """True only if this role's credentials are configured (non-empty) and
+    match. An unset or blank env var must never let a blank login through."""
+    user_var, pass_var = ROLE_CREDENTIALS[role]
+    expected_user = (os.getenv(user_var) or "").strip()
+    expected_pass = (os.getenv(pass_var) or "").strip()
+    if not expected_user or not expected_pass:
+        return False
+    user_ok = hmac.compare_digest(username.strip().encode(), expected_user.encode())
+    pass_ok = hmac.compare_digest(password.encode(), expected_pass.encode())
+    return user_ok and pass_ok
+
+
+def render_login() -> None:
+    """Shared sign-in screen. Shared role passwords rather than real
+    accounts: the credentials decide which side of the app this browser
+    session sees, stored server-side in st.session_state."""
     st.title("Service Desk Scheduler")
+    st.write("Sign in with the username and password you were given.")
     with st.form("login_form"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Log in")
+        submitted = st.form_submit_button("Sign in", type="primary")
 
     if submitted:
-        if username == os.getenv("APP_USERNAME") and password == os.getenv("APP_PASSWORD"):
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
+        role = next((r for r in (ADMIN, WORKER) if _credentials_match(r, username, password)), None)
+        if role is None:
             st.error("Invalid username or password.")
+        else:
+            st.session_state["role"] = role
+            st.rerun()
 
-    st.stop()
+
+def render_header(title: str, caption: str) -> None:
+    left, right = st.columns([5, 1], vertical_alignment="bottom")
+    left.title(title)
+    left.caption(caption)
+    if right.button("Sign out", key="sign_out"):
+        st.session_state.clear()
+        st.rerun()
 
 
-st.set_page_config(page_title="Service Desk Scheduler", layout="wide")
-require_login()
-ensure_schema()
+def render_worker_page() -> None:
+    render_header("Submit Your Availability", "Service Desk Scheduler")
+    render_availability_form()
 
-st.title("Service Desk Scheduler")
 
-tab_submit, tab_roster, tab_import, tab_review, tab_output = st.tabs(
-    ["Submit Availability", "Roster", "Import Availability", "Review & Edit", "Output"]
-)
-with tab_submit:
-    render_submit_tab()
-with tab_roster:
-    render_roster_tab()
-with tab_import:
-    render_import_tab()
-with tab_review:
-    render_review_tab()
-with tab_output:
-    render_output_tab()
+def render_admin_page() -> None:
+    pending = len(crud.list_submissions("pending"))
+    render_header(
+        "Service Desk Scheduler",
+        f"Manager view · {pending} pending in-app submission{'s' if pending != 1 else ''}",
+    )
+    tab_roster, tab_import, tab_review, tab_output = st.tabs(
+        ["Roster", "Import Availability", "Review & Edit", "Output"]
+    )
+    with tab_roster:
+        render_roster_tab()
+    with tab_import:
+        render_import_tab()
+    with tab_review:
+        render_review_tab()
+    with tab_output:
+        render_output_tab()
+
+
+role = st.session_state.get("role")
+# The manager's grids need the full width; the worker form and the sign-in
+# screen read better as a narrow, form-like column.
+st.set_page_config(page_title="Service Desk Scheduler", layout="wide" if role == ADMIN else "centered")
+
+if role is None:
+    render_login()
+else:
+    ensure_schema()
+    if role == ADMIN:
+        render_admin_page()
+    else:
+        render_worker_page()
