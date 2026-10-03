@@ -6,8 +6,9 @@ on the fixed-category fields so bad values can't be stored.
 """
 
 import json
+from datetime import UTC, datetime
 
-from sqlalchemy import CheckConstraint, Integer, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -24,6 +25,9 @@ ROLE_WEIGHTINGS = ("assistant_only", "hybrid_new", "hybrid_2nd", "tech_only")
 # the scheduler directly on the roster. A row missing any of these is
 # "incomplete" and blocks solve.
 MANUAL_FIELDS = ("role_weighting", "experience_rating", "proximity", "initials")
+
+# Lifecycle of an in-app availability submission (see Submission below).
+SUBMISSION_STATUSES = ("pending", "imported", "dismissed")
 
 
 class Roster(Base):
@@ -118,4 +122,50 @@ class Roster(Base):
             f"initials={self.initials!r}, role_weighting={self.role_weighting!r}, "
             f"experience_rating={self.experience_rating!r}, "
             f"proximity={self.proximity!r}, hours_requested={self.hours_requested!r})"
+        )
+
+
+class Submission(Base):
+    """An availability form filled in through the app, instead of an
+    uploaded xlsx/pdf.
+
+    Kept separate from Roster on purpose: a submission is the worker's
+    request, and nothing reaches the roster until the manager includes it
+    in a pipeline run and confirms the name match there - the same path an
+    uploaded file takes. `status` tracks that: "pending" until a run
+    commits it (then "imported", with roster_id set), or "dismissed" if
+    the manager discards it. Workers can submit again; each submission is
+    a new row, so the history of what they asked for is kept.
+    """
+
+    __tablename__ = "submissions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    initials: Mapped[str] = mapped_column(String, nullable=False)
+    hours_requested: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Same JSON shape as Roster.availability_json: day -> per-slot booleans.
+    availability_json: Mapped[str] = mapped_column(String, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    # Set when a pipeline run commits this submission to the roster.
+    roster_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("roster.id", ondelete="SET NULL"), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(f"status IN {SUBMISSION_STATUSES}", name="ck_submissions_status"),
+        CheckConstraint("hours_requested BETWEEN 3 AND 20", name="ck_submissions_hours_requested"),
+    )
+
+    @property
+    def availability(self) -> dict[str, list[bool]]:
+        return json.loads(self.availability_json)
+
+    def __repr__(self) -> str:
+        return (
+            f"Submission(id={self.id!r}, name={self.name!r}, initials={self.initials!r}, "
+            f"hours_requested={self.hours_requested!r}, status={self.status!r})"
         )

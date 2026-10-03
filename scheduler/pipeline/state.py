@@ -11,6 +11,8 @@ from scheduler.solver.model_input import LockedAssignment
 class PipelineState(TypedDict, total=False):
     # --- inputs ---
     submission_file_paths: list[str]
+    # Ids of in-app submissions (submissions table) the boss chose to include.
+    app_submission_ids: list[int]
 
     # --- ingestion stage ---
     availability_submissions: list[AvailabilitySubmission]

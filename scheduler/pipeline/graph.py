@@ -13,6 +13,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
 from scheduler.db import crud
+from scheduler.ingest.in_app import to_availability_submission
 from scheduler.ingest.roster_match import match_submissions_to_roster
 from scheduler.ingest.router import ingest
 from scheduler.pipeline.state import PipelineState
@@ -24,11 +25,19 @@ from scheduler.solver.solve import solve as run_solver
 def ingest_node(state: PipelineState) -> dict:
     submissions = []
     errors = []
-    for path in state["submission_file_paths"]:
+    for path in state.get("submission_file_paths") or []:
         try:
             submissions.append(ingest(path))
         except Exception as e:
             errors.append(f"{path}: {e}")
+
+    # In-app forms are already structured - nothing to parse, just load them.
+    for submission_id in state.get("app_submission_ids") or []:
+        record = crud.get_submission(submission_id)
+        if record is None or record.status != "pending":
+            errors.append(f"In-app submission #{submission_id} is no longer pending - skipped.")
+            continue
+        submissions.append(to_availability_submission(record))
 
     warnings = [w for s in submissions for w in s.warnings]
     return {
@@ -74,6 +83,8 @@ def roster_confirm_node(state: PipelineState) -> dict:
                     "hours_requested": c.submission.hours_requested,
                     "suggested_match_id": c.suggested_match_id,
                     "suggested_match_name": c.suggested_match_name,
+                    "source": c.submission.source_file,
+                    "from_app": c.submission.parser_used == "in_app",
                 }
                 for i, c in enumerate(candidates)
             ],
@@ -93,9 +104,15 @@ def roster_confirm_node(state: PipelineState) -> dict:
 
         submission = candidates[idx].submission
         person = crud.upsert_from_submission(
-            person_id, submission.name, submission.hours_requested, submission.availability
+            person_id,
+            submission.name,
+            submission.hours_requested,
+            submission.availability,
+            initials=submission.initials,
         )
         submission_roster_ids[idx] = person.id
+        if submission.app_submission_id is not None:
+            crud.set_submission_status(submission.app_submission_id, "imported", roster_id=person.id)
 
     return {"submission_roster_ids": submission_roster_ids}
 

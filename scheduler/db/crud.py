@@ -12,7 +12,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from scheduler.db.database import get_session
-from scheduler.db.models import MANUAL_FIELDS, ROLE_WEIGHTINGS, Roster
+from scheduler.db.models import MANUAL_FIELDS, ROLE_WEIGHTINGS, SUBMISSION_STATUSES, Roster, Submission
 
 
 class RosterValidationError(Exception):
@@ -94,6 +94,7 @@ def upsert_from_submission(
     name: str,
     hours_requested: int | None,
     availability: dict[str, list[bool]] | None = None,
+    initials: str | None = None,
 ) -> Roster:
     """Commit one confirmed roster-confirm decision (see graph.roster_confirm_node).
 
@@ -114,6 +115,10 @@ def upsert_from_submission(
     person_id None ("no match, treat as new"): create a fresh row with
     name + hours_requested (+ availability) set and the four manual fields
     left NULL - incomplete until the boss fills them in on the roster.
+
+    initials comes only from in-app submissions, where the worker types
+    them in. It fills a new row, or an existing row whose initials are
+    still unset - it never replaces initials the boss already chose.
     """
     availability_json = json.dumps(availability) if availability is not None else None
 
@@ -126,8 +131,15 @@ def upsert_from_submission(
             person.hours_requested = hours_requested
             if availability_json is not None:
                 person.availability_json = availability_json
+            if initials and not person.initials:
+                person.initials = initials
         else:
-            person = Roster(name=name, hours_requested=hours_requested, availability_json=availability_json)
+            person = Roster(
+                name=name,
+                hours_requested=hours_requested,
+                availability_json=availability_json,
+                initials=initials or None,
+            )
             session.add(person)
 
         session.commit()
@@ -178,5 +190,79 @@ def delete_person(person_id: int) -> bool:
         session.delete(person)
         session.commit()
         return True
+    finally:
+        session.close()
+
+
+# --- In-app availability submissions --------------------------------------
+
+
+def create_submission(
+    name: str, initials: str, hours_requested: int, availability: dict[str, list[bool]]
+) -> Submission:
+    """Store one in-app availability form as a pending submission.
+    Raises RosterValidationError on bad input."""
+    name, initials = name.strip(), initials.strip().upper()
+    if not name:
+        raise RosterValidationError("Name is required.")
+    if not initials:
+        raise RosterValidationError("Initials are required.")
+
+    session = get_session()
+    try:
+        submission = Submission(
+            name=name,
+            initials=initials,
+            hours_requested=hours_requested,
+            availability_json=json.dumps(availability),
+        )
+        session.add(submission)
+        session.commit()
+        session.refresh(submission)
+        return submission
+    except IntegrityError as e:
+        session.rollback()
+        raise RosterValidationError(f"Could not save submission for {name!r}: {e.orig}") from e
+    finally:
+        session.close()
+
+
+def get_submission(submission_id: int) -> Submission | None:
+    session = get_session()
+    try:
+        return session.get(Submission, submission_id)
+    finally:
+        session.close()
+
+
+def list_submissions(status: str | None = "pending") -> list[Submission]:
+    """Submissions with the given status (all of them if None), newest first."""
+    session = get_session()
+    try:
+        query = select(Submission).order_by(Submission.submitted_at.desc(), Submission.id.desc())
+        if status is not None:
+            query = query.where(Submission.status == status)
+        return list(session.execute(query).scalars())
+    finally:
+        session.close()
+
+
+def set_submission_status(submission_id: int, status: str, roster_id: int | None = None) -> Submission:
+    """Move a submission to "imported" (with the roster row it became) or
+    "dismissed"."""
+    if status not in SUBMISSION_STATUSES:
+        raise RosterValidationError(f"status must be one of {SUBMISSION_STATUSES}, got {status!r}")
+
+    session = get_session()
+    try:
+        submission = session.get(Submission, submission_id)
+        if submission is None:
+            raise RosterValidationError(f"No submission with id={submission_id}")
+        submission.status = status
+        if roster_id is not None:
+            submission.roster_id = roster_id
+        session.commit()
+        session.refresh(submission)
+        return submission
     finally:
         session.close()

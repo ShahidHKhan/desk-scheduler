@@ -43,8 +43,13 @@ class AvailabilitySubmission:
     # availability[day][slot_index] = True if marked available
     availability: dict[str, list[bool]] = field(default_factory=dict)
     source_file: str = ""
-    parser_used: str = ""  # "xlsx" | "pdf_text" | "pdf_vision"
+    parser_used: str = ""  # "xlsx" | "pdf_text" | "pdf_vision" | "in_app"
     warnings: list[str] = field(default_factory=list)
+    # Only set for in-app submissions: the worker types their own initials
+    # (file templates have no initials field), and the submissions-table id
+    # lets the pipeline mark that row imported once it's committed.
+    initials: str | None = None
+    app_submission_id: int | None = None
 
     def available_slots(self, day: str) -> list[str]:
         """Return the TIME_SLOTS labels this person marked available for a given day."""

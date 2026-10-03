@@ -39,11 +39,12 @@ database.init_db()
 
 @pytest.fixture(autouse=True)
 def clean_roster():
-    """Every test starts with an empty roster table - tests that need rows
+    """Every test starts with empty roster and submissions tables - tests that need rows
     add them via crud/fixtures. Runs before each test, not after, so a
     failed test's leftover rows never leak into the next one."""
     session = database.get_session()
     try:
+        session.execute(delete(models.Submission))
         session.execute(delete(models.Roster))
         session.commit()
     finally:
