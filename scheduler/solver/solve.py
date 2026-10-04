@@ -27,7 +27,7 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
             "status": "INFEASIBLE",
             "feasible": False,
             "assignments": [],
-            "hours_assigned": {},
+            "people": [],
             "coverage_gaps": coverage_gaps,
             "coverage_shortfalls": [],
         }
@@ -42,8 +42,13 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
     result = {
         "status": solver.StatusName(status),
         "feasible": status in (cp_model.OPTIMAL, cp_model.FEASIBLE),
+        # Both keyed by person id, never by name - names aren't unique on
+        # the roster. Name and initials ride along for display, as they
+        # were at solve time, so a saved schedule needs no roster lookup.
+        # assignments: {person_id, name, initials, day, slot, role}
+        # people: {person_id, name, initials, hours_requested, hours_assigned}
         "assignments": [],
-        "hours_assigned": {},
+        "people": [],
         "coverage_gaps": [],
         # Weekday coverage is a soft constraint (build_model.py) - a
         # feasible solve can still leave weekday slots understaffed
@@ -65,10 +70,25 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
                 for role in ("assistant", "tech"):
                     if solver.Value(x[p.id, day, slot, role]):
                         result["assignments"].append(
-                            {"person": p.name, "day": day, "slot": slot, "role": role}
+                            {
+                                "person_id": p.id,
+                                "name": p.name,
+                                "initials": p.initials,
+                                "day": day,
+                                "slot": slot,
+                                "role": role,
+                            }
                         )
                         assigned_slots += 1
-        result["hours_assigned"][p.name] = assigned_slots * 0.5
+        result["people"].append(
+            {
+                "person_id": p.id,
+                "name": p.name,
+                "initials": p.initials,
+                "hours_requested": p.hours_requested,
+                "hours_assigned": assigned_slots * 0.5,
+            }
+        )
 
     result["coverage_shortfalls"] = summarize_coverage_shortfalls(solver, variables)
 
@@ -113,5 +133,5 @@ if __name__ == "__main__":
         print(f"{len(result['coverage_gaps'])} coverage gap(s):")
         for gap in result["coverage_gaps"]:
             print(" ", gap)
-    print("Hours assigned:", result["hours_assigned"])
+    print("Hours assigned:", {p["name"]: p["hours_assigned"] for p in result["people"]})
     print(f"{len(result['assignments'])} slot-assignments made")

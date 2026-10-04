@@ -93,7 +93,7 @@ def test_reupload_of_one_person_does_not_drop_others_availability():
         f"availability was lost"
     )
 
-    weekend_people_after = {a["person"] for a in result2["assignments"] if a["day"] in ("Sat", "Sun")}
+    weekend_people_after = {a["name"] for a in result2["assignments"] if a["day"] in ("Sat", "Sun")}
     assert "Alice" in weekend_people_after or "Cara" in weekend_people_after, (
         f"expected Alice and/or Cara to still cover weekend slots after Bob's solo re-upload, "
         f"got weekend coverage from: {weekend_people_after}"

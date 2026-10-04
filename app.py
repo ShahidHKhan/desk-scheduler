@@ -12,7 +12,6 @@ Run with:
 
 import hmac
 import os
-import sqlite3
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,85 +20,46 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import Command
 
-# Must run before the scheduler imports below: scheduler.db.database reads
-# DATABASE_URL at import time to build its engine.
+from scheduler.db import crud, database
+from scheduler.db.crud import RosterValidationError
+from scheduler.db.models import ROLE_WEIGHTINGS
+from scheduler.ingest.in_app import FORM_SLOTS, availability_from_grid, available_hours
+from scheduler.ingest.schema import HOURS_MAX, HOURS_MIN
+from scheduler.pipeline import runner
+from scheduler.pipeline.format_output import build_hours_table, build_schedule_grid
+from scheduler.pipeline.graph import REVIEW, ROSTER_CONFIRM, ROSTER_INCOMPLETE
+from scheduler.solver.model_input import DAYS, ROLES, slot_label, time_label
+from scheduler.ui.availability_grid import availability_grid
+
 load_dotenv()
 
-from scheduler.db import crud, database  # noqa: E402
-from scheduler.db.crud import RosterValidationError  # noqa: E402
-from scheduler.db.models import ROLE_WEIGHTINGS  # noqa: E402
-from scheduler.ingest.in_app import availability_from_grid, available_hours  # noqa: E402
-from scheduler.ingest.schema import HOURS_MAX, HOURS_MIN  # noqa: E402
-from scheduler.pipeline.format_output import build_schedule_grid  # noqa: E402
-from scheduler.pipeline.graph import build_graph  # noqa: E402
-from scheduler.solver.model_input import DAYS, ROLES  # noqa: E402
-from scheduler.ui.availability_grid import availability_grid  # noqa: E402
-
-CHECKPOINT_DB = "graph_checkpoints.db"
 # Timestamps are stored in UTC and shown in the desk's local time.
 APP_TIMEZONE = ZoneInfo(os.getenv("APP_TIMEZONE", "America/New_York"))
-# Single-user tool: one in-flight pipeline run at a time is an accepted
-# simplification, not an oversight - a fixed thread_id means every
-# invoke/resume in this app talks to the same run.
-THREAD_ID = "main"
 
 
 @st.cache_resource
 def ensure_schema() -> None:
-    """Create the roster table (and any newly added columns) once per
-    process, so a fresh database works without a separate setup step."""
+    """Create the tables (and any newly added columns) once per process,
+    so a fresh database works without a separate setup step."""
     database.init_db()
 
 
-@st.cache_resource
-def get_graph_app():
-    # Raw SqliteSaver(conn), NOT `with SqliteSaver.from_conn_string(...) as saver:`.
-    # The context-manager form closes its connection when the `with` block
-    # exits, which happens almost immediately inside a cached-resource
-    # function - that breaks checkpoint persistence across Streamlit reruns.
-    # Confirmed by testing: building a saver this way, compiling two separate
-    # graph objects against the same connection (simulating two reruns), and
-    # checking state persists across them under the same thread_id.
-    conn = sqlite3.connect(CHECKPOINT_DB, check_same_thread=False)
-    checkpointer = SqliteSaver(conn)
-    return build_graph(checkpointer)
+def _person_label(person) -> str:
+    return f"{person.name} ({person.initials})" if person.initials else person.name
 
 
-def _config():
-    return {"configurable": {"thread_id": THREAD_ID}}
-
-
-def _current_interrupt(result: dict | None) -> dict | None:
-    """Return the payload of the graph's current interrupt(), or None if
-    the run isn't paused (finished, or hasn't started)."""
-    if not result:
-        return None
-    interrupts = result.get("__interrupt__")
-    if not interrupts:
-        return None
-    return interrupts[0].value
-
-
-def _resume_graph(resume_payload: dict, rerun: bool = True):
-    """Resume the paused graph (at whichever node is currently interrupted).
-    Returns the new result, or None if there was nothing left to resume
-    (e.g. a prior lock conflict already routed the graph to explain -> END,
-    closing out that thread)."""
+def _resume_graph(resume_payload: dict) -> None:
+    """Answer the pause the run is at, then rerun so every tab shows the
+    run's new state. Nothing is kept in st.session_state: the run's state
+    lives in its checkpoints (see scheduler/pipeline/runner.py), so it
+    survives a page reload or a new sign-in."""
     try:
-        new_result = get_graph_app().invoke(Command(resume=resume_payload), config=_config())
-    except Exception as e:
-        st.error(
-            f"Could not resume ({e}). The run may have already ended - "
-            f"go back to Import Availability to start a new one."
-        )
-        return None
-    st.session_state["last_result"] = new_result
-    if rerun:
-        st.rerun()
-    return new_result
+        runner.resume(resume_payload)
+    except runner.NoPausedRun as e:
+        st.error(f"{e} Go back to Import Availability to start a new run.")
+        return
+    st.rerun()
 
 
 def render_availability_form():
@@ -245,9 +205,7 @@ def _render_roster_confirm(payload: dict):
     confirm, redirect to a different person, or add as new. Nothing is
     written to the roster until this form is submitted."""
     st.info(payload["message"])
-    roster = crud.list_roster()
-    roster_names = [p.name for p in roster]
-    roster_id_by_name = {p.name: p.id for p in roster}
+    roster_labels = {p.id: _person_label(p) for p in crud.list_roster()}
 
     with st.form("roster_confirm_form"):
         rows = []
@@ -268,12 +226,15 @@ def _render_roster_confirm(payload: dict):
                 key=f"roster_confirm_action_{c['index']}",
                 horizontal=True,
             )
-            chosen_name = None
+            chosen_id = None
             if action_label == "Choose different person":
-                chosen_name = st.selectbox(
-                    "Which existing person?", roster_names, key=f"roster_confirm_other_{c['index']}"
+                chosen_id = st.selectbox(
+                    "Which existing person?",
+                    list(roster_labels),
+                    format_func=roster_labels.get,
+                    key=f"roster_confirm_other_{c['index']}",
                 )
-            rows.append({"index": c["index"], "action_label": action_label, "chosen_name": chosen_name})
+            rows.append({"index": c["index"], "action_label": action_label, "chosen_id": chosen_id})
             st.divider()
 
         submitted = st.form_submit_button("Confirm all")
@@ -288,7 +249,7 @@ def _render_roster_confirm(payload: dict):
                     {
                         "index": row["index"],
                         "action": "choose_other",
-                        "person_id": roster_id_by_name[row["chosen_name"]],
+                        "person_id": row["chosen_id"],
                     }
                 )
             else:
@@ -362,26 +323,24 @@ def _render_pending_submissions() -> list[int]:
 
 def render_import_tab():
     st.subheader("Import Availability")
-    result = st.session_state.get("last_result")
-    interrupt_payload = _current_interrupt(result)
+    values, pause = runner.current_state()
+    # .get: a pause checkpointed before payloads had a "kind" falls through
+    # to the upload form, and starting a new run replaces it.
+    kind = pause.get("kind") if pause else None
 
-    if interrupt_payload is not None and "candidates" in interrupt_payload:
-        _render_roster_confirm(interrupt_payload)
+    if kind == ROSTER_CONFIRM:
+        _render_roster_confirm(pause)
         return
-
-    if interrupt_payload is not None and "incomplete_rows" in interrupt_payload:
-        _render_completeness_gate(interrupt_payload)
+    if kind == ROSTER_INCOMPLETE:
+        _render_completeness_gate(pause)
         return
-
-    if interrupt_payload is not None:
-        # Reached human_review (or later) - the import/confirm/completeness
-        # part of the pipeline is done, hand off to the Review & Edit tab.
+    if kind == REVIEW:
         st.success("Import complete - continue in the Review & Edit tab.")
         return
 
-    if result is not None and result.get("review_notes") and result.get("solve_result") is None:
+    if values.get("review_notes") and values.get("solve_result") is None:
         st.error("Pipeline ended without a feasible schedule:")
-        st.code(result["review_notes"])
+        st.code(values["review_notes"])
 
     selected_app_ids = _render_pending_submissions()
 
@@ -394,36 +353,58 @@ def render_import_tab():
         tmpdir = tempfile.mkdtemp()
         paths = []
         for f in uploaded_files or []:
-            path = str(Path(tmpdir) / f.name)
+            # The browser supplies the name; keep only its last part so it
+            # can't point outside tmpdir.
+            path = str(Path(tmpdir) / Path(f.name).name)
             with open(path, "wb") as out:
                 out.write(f.getbuffer())
             paths.append(path)
 
-        new_result = get_graph_app().invoke(
-            {"submission_file_paths": paths, "app_submission_ids": selected_app_ids}, config=_config()
-        )
-        st.session_state["last_result"] = new_result
-        st.session_state["locks"] = []
-
-        errors = new_result.get("ingestion_errors") or []
-        for e in errors:
-            st.error(e)
+        with st.spinner("Reading submissions..."):
+            runner.start_run(paths, selected_app_ids)
         st.rerun()
+
+
+def _render_lock_list(locks: list[dict], people: list[dict]) -> None:
+    """The edits the schedule on screen was solved with, each removable."""
+    if not locks:
+        return
+    names = {p["person_id"]: p["name"] for p in people}
+    st.markdown("### Your edits")
+    for i, lock in enumerate(locks):
+        name = names.get(lock["person_id"], f"Person #{lock['person_id']}")
+        force = "into" if lock["value"] else "out of"
+        text_col, button_col = st.columns([5, 1], vertical_alignment="center")
+        text_col.write(f"{name}: forced {force} {lock['role']} on {slot_label(lock['day'], lock['slot'])}")
+        if button_col.button("Remove", key=f"remove_lock_{i}"):
+            with st.spinner("Re-solving..."):
+                _resume_graph({"decision": "edit", "remove_locks": [lock]})
 
 
 def render_review_tab():
     st.subheader("Review & Edit")
-    result = st.session_state.get("last_result")
-    if not result or not result.get("solve_result"):
-        st.info("Run the pipeline first (see the Import Availability tab).")
+    values, pause = runner.current_state()
+    if not pause or pause.get("kind") != REVIEW:
+        if crud.latest_schedule() is not None:
+            st.info("Nothing is waiting for review. The latest approved schedule is on the Output tab.")
+        else:
+            st.info("Run the pipeline first (see the Import Availability tab).")
         return
 
-    people_lookup = {p.name: p for p in crud.list_roster()}
-    grid = build_schedule_grid(result["solve_result"], people_lookup)
-    st.dataframe(grid, width="stretch")
-    st.write("Hours assigned:", result["solve_result"]["hours_assigned"])
+    # A failed edit leaves the last good schedule on screen; the message
+    # says so, and the conflicts or gaps say why.
+    if pause["lock_conflicts"] or pause["infeasibility_gaps"]:
+        st.warning(pause["message"])
+    else:
+        st.info(pause["message"])
+    for problem in pause["lock_conflicts"] + pause["infeasibility_gaps"]:
+        st.error(problem)
 
-    shortfalls = result["solve_result"].get("coverage_shortfalls") or []
+    solve_result = values["solve_result"]
+    st.dataframe(build_schedule_grid(solve_result), width="stretch")
+    st.dataframe(build_hours_table(solve_result), hide_index=True)
+
+    shortfalls = pause["coverage_shortfalls"]
     if shortfalls:
         st.warning(f"{len(shortfalls)} weekday slot(s) fell short of the 2 assistant + 2 tech target:")
         for s in shortfalls:
@@ -435,64 +416,41 @@ def render_review_tab():
     if col2.button("Reject"):
         _resume_graph({"decision": "rejected"})
 
+    _render_lock_list(pause["locks"], pause["people"])
+
     st.markdown("### Edit a slot")
+    roster_labels = {p.id: _person_label(p) for p in crud.list_roster()}
     with st.form("lock_form"):
-        person_name = st.selectbox("Person", list(people_lookup.keys()))
+        person_id = st.selectbox("Person", list(roster_labels), format_func=roster_labels.get)
         day = st.selectbox("Day", DAYS)
-        slot = st.number_input(
-            "Slot index (0 = 08:00, one per half hour)", min_value=0, max_value=24, value=0, step=1
-        )
+        slot = st.selectbox("Half hour starting", FORM_SLOTS, format_func=time_label)
         role = st.selectbox("Role", ROLES)
         force = st.radio("Force", ["In", "Out"], horizontal=True)
         submitted = st.form_submit_button("Apply edit")
 
-        if submitted:
-            person = people_lookup[person_name]
-            new_lock = {
-                "person_id": person.id,
-                "day": day,
-                "slot": int(slot),
-                "role": role,
-                "value": force == "In",
-            }
-            # human_review_node replaces locked_assignments wholesale on each
-            # "edit" resume, so re-send every lock applied so far this
-            # session, not just the newest one - otherwise earlier edits get
-            # silently dropped by the next one.
-            locks = st.session_state.get("locks", []) + [new_lock]
-            new_result = _resume_graph({"decision": "edit", "locked_assignments": locks}, rerun=False)
-            if new_result is not None:
-                # A re-solve can fail two ways: the lock itself is
-                # contradictory (lock_conflicts), or it's individually valid
-                # but breaks coverage elsewhere (infeasibility_gaps) - either
-                # way the edit didn't take, so don't commit it into the
-                # accumulated locks list or every future resend would keep
-                # re-applying a lock that's known to break the schedule.
-                gaps = new_result.get("infeasibility_gaps") or []
-                conflicts = new_result.get("lock_conflicts") or []
-                if gaps or conflicts:
-                    for c in conflicts:
-                        st.error(c)
-                    for g in gaps:
-                        st.error(g)
-                    st.warning("Edit not applied - still showing your last approved-pending schedule.")
-                else:
-                    st.session_state["locks"] = locks
-                    st.rerun()
+    if submitted:
+        lock = {"person_id": person_id, "day": day, "slot": int(slot), "role": role, "value": force == "In"}
+        # The pipeline keeps the accepted edits itself (see
+        # graph.human_review_node), so only the new one is sent. If the
+        # re-solve fails, it's dropped and the last good schedule stays.
+        with st.spinner("Re-solving..."):
+            _resume_graph({"decision": "edit", "add_locks": [lock]})
 
 
 def render_output_tab():
     st.subheader("Output")
-    result = st.session_state.get("last_result")
-    if not result or not result.get("final_schedule"):
+    schedule = crud.latest_schedule()
+    if schedule is None:
         st.info("No approved schedule yet - approve one in the Review & Edit tab first.")
         return
 
-    people_lookup = {p.name: p for p in crud.list_roster()}
-    grid = build_schedule_grid(result["final_schedule"], people_lookup)
+    st.caption(f"Approved {_local_time(schedule.approved_at)}")
+    result = schedule.result
+    grid = build_schedule_grid(result)
     st.dataframe(grid, width="stretch")
+    st.dataframe(build_hours_table(result), hide_index=True)
 
-    shortfalls = result["final_schedule"].get("coverage_shortfalls") or []
+    shortfalls = result.get("coverage_shortfalls") or []
     if shortfalls:
         st.warning(f"{len(shortfalls)} weekday slot(s) in this approved schedule are understaffed:")
         for s in shortfalls:
@@ -501,7 +459,6 @@ def render_output_tab():
     st.download_button(
         "Download CSV", grid.to_csv().encode("utf-8"), file_name="schedule.csv", mime="text/csv"
     )
-
 
 ADMIN, WORKER = "admin", "worker"
 # Which env vars hold each role's shared username/password. Set locally in

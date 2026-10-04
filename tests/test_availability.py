@@ -23,7 +23,7 @@ def test_no_assignment_falls_outside_marked_availability():
     result = solve(data, time_limit_seconds=15)
     assert result["feasible"], f"expected a feasible solve, got {result['status']}"
 
-    narrow_assignments = [a for a in result["assignments"] if a["person"] == "NarrowTech"]
+    narrow_assignments = [a for a in result["assignments"] if a["name"] == "NarrowTech"]
     # Exercise the rule for real, not vacuously: NarrowTech has strong
     # incentive (fairness objective) to be used somewhere, and free
     # coverage-slack to be used in - confirm the solver actually did place

@@ -9,6 +9,8 @@ _build_solver_input() converts roster rows into this shape.
 
 from dataclasses import dataclass, field
 
+from scheduler.ingest.schema import TIME_SLOTS
+
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 NUM_SLOTS = 25  # matches ingestion/schema.py TIME_SLOTS
 ROLES = ["assistant", "tech"]
@@ -32,6 +34,24 @@ OPERATING_SLOTS = {
 }
 WEEKDAYS = {"Mon", "Tue", "Wed", "Thu", "Fri"}
 WEEKEND_DAYS = {"Sat", "Sun"}
+
+
+def time_label(slot: int) -> str:
+    """The clock time a slot starts at: 4 -> "10:00". Falls back to
+    "slot N" for an index off the grid, so a message about a bad lock can
+    still name it."""
+    return TIME_SLOTS[slot] if 0 <= slot < len(TIME_SLOTS) else f"slot {slot}"
+
+
+def slot_label(day: str, slot: int) -> str:
+    """How messages name a slot: ("Mon", 4) -> "Mon 10:00"."""
+    return f"{day} {time_label(slot)}"
+
+
+def operating_slot_options(day: str) -> list[tuple[int, str]]:
+    """(slot, "10:00-10:30") for each half hour the desk is open on `day`,
+    for a UI to offer instead of raw slot numbers."""
+    return [(slot, f"{TIME_SLOTS[slot]}-{TIME_SLOTS[slot + 1]}") for slot in OPERATING_SLOTS[day]]
 
 
 @dataclass

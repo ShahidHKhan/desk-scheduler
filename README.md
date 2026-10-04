@@ -31,7 +31,7 @@ The pipeline is a [LangGraph](https://github.com/langchain-ai/langgraph) state g
 - **Ingestion** parses the fixed-layout xlsx template directly. Digital PDFs are rebuilt from word coordinates. Scanned PDFs go to Gemini vision, which must return strict JSON and fails loudly rather than guessing.
 - **Roster.** Submissions create or update roster rows with name, hours and availability. In-app submissions also supply initials, but never overwrite initials the manager already set. The manager fills in the rest: role, experience rating and proximity. Solving is blocked until every row is complete.
 - **Solver.** OR-Tools CP-SAT, with one boolean per person × day × half-hour slot × role. Hard rules are constraints. Weekday coverage is a heavily weighted penalty, so the solver only leaves a gap when nothing else works.
-- **Review loop.** Each manual edit becomes a lock (force a person in or out of a slot) and the week is re-solved around it. Contradictory locks are rejected before solving. If an edit makes the week infeasible, the last good schedule stays on screen.
+- **Review loop.** Each manual edit becomes a lock (force a person in or out of a slot at a given time) and the week is re-solved around it. The pipeline keeps only edits that solved: contradictory locks are rejected before solving, and if an edit makes the week infeasible it's dropped and the last good schedule stays on screen. Any edit can be removed again. An approved schedule is saved to the database with the edits it was solved with, so the next import doesn't replace it.
 - **Diagnosis.** When a weekend slot can't be staffed, `diagnose.py` names the slot and the specific reason each person was ruled out.
 
 ## Scheduling rules
@@ -58,7 +58,7 @@ scheduler/
   db/                   SQLAlchemy roster model, engine setup, CRUD
   ingest/               xlsx / pdf parsers, Gemini vision fallback, in-app form, name matching
   solver/               CP-SAT model, solve, pre-solve diagnosis, lock validation
-  pipeline/             LangGraph graph and state, schedule grid formatting
+  pipeline/             LangGraph graph and state, run lifecycle and checkpointer, schedule grid formatting
   evals/                LLM-as-judge for infeasibility explanations
   ui/                   Drag-to-select availability grid (Streamlit custom component)
 scripts/batch_ingest.py Parse a folder of submissions from the command line
@@ -103,11 +103,11 @@ ruff check .
 
 The suite runs real solves and checks the output against each hard rule. It also covers weekday coverage under shortage, infeasibility diagnosis, the lock/edit/re-solve loop through LangGraph, a regression test for roster availability persistence, and the LLM judge. The judge's accuracy check is plain Python cross-referencing; the one live Gemini test skips when no key is set.
 
-Tests always run against a throwaway SQLite database. `tests/conftest.py` drops `DATABASE_URL` so a local `.env` can never point the suite at a real database. CI runs on every push and pull request to `main`.
+Tests always run against throwaway SQLite databases, for both the roster and the pipeline's checkpoints. `tests/conftest.py` blanks `DATABASE_URL` so a local `.env` can never point the suite at a real database. The Postgres checkpointer test runs only when `TEST_POSTGRES_URL` points at a disposable database. CI runs on every push and pull request to `main`.
 
 ## Deployment
 
-The app runs as a single Docker container on [Fly.io](https://fly.io), with the roster in [Supabase](https://supabase.com) Postgres. Secrets (`DATABASE_URL`, `GEMINI_API_KEY`, `APP_USERNAME`, `APP_PASSWORD`, `ADMIN_APP_USERNAME`, `ADMIN_APP_PASSWORD`, LangSmith keys) are set with `flyctl secrets`. Machines stop when idle and start on the next request.
+The app runs as a single Docker container on [Fly.io](https://fly.io), with the roster and the pipeline's checkpoints in [Supabase](https://supabase.com) Postgres, so a paused review survives the machine stopping. The app turns on row-level security for every table it creates, which closes them to Supabase's built-in REST API; the app itself owns the tables, so it isn't affected. Secrets (`DATABASE_URL`, `GEMINI_API_KEY`, `APP_USERNAME`, `APP_PASSWORD`, `ADMIN_APP_USERNAME`, `ADMIN_APP_PASSWORD`, LangSmith keys) are set with `flyctl secrets`. Machines stop when idle and start on the next request.
 
 ```bash
 flyctl deploy
@@ -122,10 +122,9 @@ I chose this stack because I had already run Fly.io and Supabase in production o
 - **Exact name matching with human confirmation.** Every match is reviewed anyway, so fuzzy matching would add risk without saving work.
 - **Edits are locks plus re-solve.** The manager asked for move/lock/re-solve, not one-off rule overrides.
 - **Availability persists on the roster row.** Re-uploading one corrected form doesn't erase everyone else's availability (see `tests/test_roster_availability_persistence.py`).
+- **People are identified by id, never by name.** Two workers can share a name, so solver output, locks and name-match choices all use roster ids. Results carry each person's name and initials as they were at solve time, so a saved schedule still displays correctly after the roster changes.
 
 ## Roadmap
 
 - Add the hybrid role ratios, proximity and the weekend cap to the objective.
-- Move the LangGraph checkpointer to Postgres so a paused review survives a restart, and store approved schedules in the database.
 - Validate the PDF and scanned-PDF paths against more real submissions.
-- Let edits use clock times rather than slot indices.

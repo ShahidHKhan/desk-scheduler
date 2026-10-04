@@ -27,7 +27,7 @@ def test_every_weekend_slot_has_exactly_one_tech_capable_person():
         key = (a["day"], a["slot"])
         if a["role"] == "tech":
             tech_count_by_slot[key] = tech_count_by_slot.get(key, 0) + 1
-            assigned_person_by_slot[key] = a["person"]
+            assigned_person_by_slot[key] = a["name"]
         else:
             assistant_count_by_slot[key] = assistant_count_by_slot.get(key, 0) + 1
 

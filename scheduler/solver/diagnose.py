@@ -28,8 +28,15 @@ from dataclasses import dataclass
 
 from ortools.sat.python import cp_model
 
-from scheduler.ingest.schema import TIME_SLOTS
-from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, WEEKEND_DAYS, Person, SolverInput
+from scheduler.solver.model_input import (
+    DAYS,
+    OPERATING_SLOTS,
+    WEEKEND_DAYS,
+    Person,
+    SolverInput,
+    slot_label,
+    time_label,
+)
 
 WEEKEND_TECHS_REQUIRED = 1
 
@@ -59,11 +66,11 @@ class SlotDiagnosis:
 
     @property
     def time_label(self) -> str:
-        return TIME_SLOTS[self.slot]
+        return time_label(self.slot)
 
     @property
     def slot_label(self) -> str:
-        return f"{self.day} {self.time_label}"
+        return slot_label(self.day, self.slot)
 
     def to_message(self) -> str:
         checked = ", ".join(f"[{r.person_name} — {r.detail}]" for r in self.rulings)
@@ -134,5 +141,5 @@ def summarize_coverage_shortfalls(solver: cp_model.CpSolver, variables: dict) ->
     for role, day, slot, shortfall_var in variables.get("coverage_shortfalls", []):
         shortfall = solver.Value(shortfall_var)
         if shortfall > 0:
-            messages.append(f"{day} slot {slot}: understaffed by {shortfall} {role}(s)")
+            messages.append(f"{slot_label(day, slot)}: understaffed by {shortfall} {role}(s)")
     return messages

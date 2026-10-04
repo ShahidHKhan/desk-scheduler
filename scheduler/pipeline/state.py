@@ -35,7 +35,13 @@ class PipelineState(TypedDict, total=False):
     solve_status: str  # "OPTIMAL" | "FEASIBLE" | "INFEASIBLE" | "UNKNOWN" | "LOCK_CONFLICT" | "SKIPPED"
     solve_result: dict | None
     infeasibility_gaps: list[str]
+    # The manual edits solve_result was solved with. Only a successful
+    # solve changes this, so it always matches the schedule on screen.
     locked_assignments: list[LockedAssignment]
+    # Set by human_review_node on an "edit": the lock list to try next.
+    # solve_node consumes it - it becomes locked_assignments if the solve
+    # succeeds, and is discarded if it fails.
+    proposed_locks: list[LockedAssignment] | None
     lock_conflicts: list[str]
 
     # --- human review stage ---
@@ -44,3 +50,5 @@ class PipelineState(TypedDict, total=False):
 
     # --- output ---
     final_schedule: dict | None
+    # Id of the row output_node saved to the schedules table.
+    schedule_id: int | None

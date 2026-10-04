@@ -24,7 +24,7 @@ def test_assistant_only_never_assigned_tech_role_even_when_tech_coverage_is_shor
     assert result["feasible"], f"expected a feasible solve, got {result['status']}"
 
     tech_assignments_by_asst1 = [
-        a for a in result["assignments"] if a["person"] == "Asst1" and a["role"] == "tech"
+        a for a in result["assignments"] if a["name"] == "Asst1" and a["role"] == "tech"
     ]
     assert not tech_assignments_by_asst1, (
         f"Asst1 (assistant_only) was assigned a tech slot: {tech_assignments_by_asst1}"

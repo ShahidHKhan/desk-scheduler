@@ -8,7 +8,7 @@ effects, doesn't touch the CP-SAT model - so it's cheap to call before
 deciding whether to solve at all.
 """
 
-from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, ROLES, SolverInput
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, ROLES, SolverInput, slot_label
 
 
 def validate_locks(data: SolverInput) -> list[str]:
@@ -26,28 +26,25 @@ def validate_locks(data: SolverInput) -> list[str]:
             conflicts.append(f"Lock for {person.name}: {lock.day!r} is not a valid day")
             continue
 
+        where = slot_label(lock.day, lock.slot)
         if lock.slot not in OPERATING_SLOTS[lock.day]:
-            conflicts.append(
-                f"Lock for {person.name} on {lock.day} slot {lock.slot}: outside that day's operating hours"
-            )
+            conflicts.append(f"Lock for {person.name} on {where}: outside that day's operating hours")
             continue
 
         if lock.value and not person.is_available(lock.day, lock.slot):
             conflicts.append(
-                f"Lock for {person.name} on {lock.day} slot {lock.slot}: forced IN, but they "
+                f"Lock for {person.name} on {where}: forced IN, but they "
                 f"never marked themselves available then"
             )
 
         if lock.value and lock.role == "tech" and not person.can_work_tech():
             conflicts.append(
-                f"Lock for {person.name} on {lock.day} slot {lock.slot}: forced into the tech "
+                f"Lock for {person.name} on {where}: forced into the tech "
                 f"role, but role_weighting={person.role_weighting!r} doesn't allow tech work"
             )
 
         if lock.role not in ROLES:
-            conflicts.append(
-                f"Lock for {person.name} on {lock.day} slot {lock.slot}: {lock.role!r} is not a valid role"
-            )
+            conflicts.append(f"Lock for {person.name} on {where}: {lock.role!r} is not a valid role")
 
     # Cross-lock: two different value=True locks for the same (person, day, slot)
     # but different roles - a person can only hold one role per slot (mirrors the
@@ -60,7 +57,7 @@ def validate_locks(data: SolverInput) -> list[str]:
     for (person_id, day, slot), roles in forced_in_roles.items():
         if len(roles) > 1:
             conflicts.append(
-                f"Lock for {people_by_id[person_id].name} on {day} slot {slot}: forced into "
+                f"Lock for {people_by_id[person_id].name} on {slot_label(day, slot)}: forced into "
                 f"multiple roles at once ({', '.join(sorted(roles))})"
             )
 

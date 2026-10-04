@@ -8,7 +8,9 @@ Covers:
       role) is caught by validate_locks() before it reaches build_model()
   (c) the full pause -> edit -> re-solve -> pause -> approve cycle through
       the LangGraph pipeline, including falling back to the last good
-      schedule when an edit makes the week infeasible
+      schedule when an edit makes the week infeasible, the pipeline keeping
+      only edits that solved, removing an edit, and saving the approved
+      schedule
 """
 
 import openpyxl
@@ -17,7 +19,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from scheduler.db import crud
-from scheduler.pipeline.graph import build_graph
+from scheduler.pipeline.graph import REVIEW, ROSTER_CONFIRM, build_graph
 from scheduler.solver.locks import validate_locks
 from scheduler.solver.model_input import LockedAssignment, Person, SolverInput
 from scheduler.solver.solve import solve as run_solver
@@ -58,7 +60,7 @@ def test_valid_locks_hold():
     # Force-out: take a real baseline assignment and lock that person OUT of it.
     victim = baseline["assignments"][0]
     force_out = LockedAssignment(
-        person_id=next(p.id for p in roster if p.name == victim["person"]),
+        person_id=victim["person_id"],
         day=victim["day"], slot=victim["slot"], role=victim["role"], value=False,
     )
     # Force-in: a tech-capable person into a slot they're available for.
@@ -72,12 +74,12 @@ def test_valid_locks_hold():
     assert result["feasible"], f"expected feasible with locks applied, got {result['status']}"
 
     assert not any(
-        a["person"] == victim["person"] and a["day"] == victim["day"]
+        a["name"] == victim["name"] and a["day"] == victim["day"]
         and a["slot"] == victim["slot"] and a["role"] == victim["role"]
         for a in result["assignments"]
     ), "force-out lock did not hold"
     assert any(
-        a["person"] == "Tech2" and a["day"] == "Wed" and a["slot"] == 10 and a["role"] == "tech"
+        a["name"] == "Tech2" and a["day"] == "Wed" and a["slot"] == 10 and a["role"] == "tech"
         for a in result["assignments"]
     ), "force-in lock did not hold"
 
@@ -91,6 +93,7 @@ def test_invalid_lock_caught_before_build_model():
     conflicts = validate_locks(data)
     assert conflicts, "expected a capability conflict for an assistant-only person locked into tech"
     assert "tech" in conflicts[0].lower()
+    assert "Mon 10:30" in conflicts[0], "conflicts should name the slot by its clock time"
 
     # Without validation, the solver must not quietly honor the lock either.
     assert not run_solver(data, time_limit_seconds=5)["feasible"]
@@ -113,44 +116,70 @@ def test_full_edit_resolve_cycle(tmp_path):
         app = build_graph(checkpointer)
         config = {"configurable": {"thread_id": "edit-loop-test"}}
 
+        def edit(**changes):
+            return app.invoke(Command(resume={"decision": "edit", **changes}), config=config)
+
+        def accepted_locks(result):
+            return result["__interrupt__"][0].value["locks"]
+
         result = app.invoke({"submission_file_paths": paths}, config=config)
         payload = result["__interrupt__"][0].value
-        assert "candidates" in payload, "expected the first pause to be roster_confirm"
+        assert payload["kind"] == ROSTER_CONFIRM
 
         decisions = [{"index": c["index"], "action": "confirm"} for c in payload["candidates"]]
         result = app.invoke(Command(resume={"decisions": decisions}), config=config)
-        assert "__interrupt__" in result, "expected a pause at human_review"
-        assert "candidates" not in result["__interrupt__"][0].value
+        assert result["__interrupt__"][0].value["kind"] == REVIEW
 
         # A valid edit loops back to solve and the lock shows up in the schedule.
         lock = {"person_id": db_id_by_name["Tech2"], "day": "Thu", "slot": 12, "role": "tech", "value": True}
-        result = app.invoke(Command(resume={"decision": "edit", "locked_assignments": [lock]}), config=config)
+        result = edit(add_locks=[lock])
         assert not result.get("lock_conflicts")
-        assert "__interrupt__" in result
+        assert accepted_locks(result) == [lock]
         assert any(
-            a["person"] == "Tech2" and a["day"] == "Thu" and a["slot"] == 12 and a["role"] == "tech"
+            a["name"] == "Tech2" and a["day"] == "Thu" and a["slot"] == 12 and a["role"] == "tech"
             for a in result["solve_result"]["assignments"]
         )
         good_solve_result = result["solve_result"]
+
+        # A contradictory lock is rejected before solving, and isn't kept.
+        bad = {"person_id": db_id_by_name["Asst11"], "day": "Mon", "slot": 4, "role": "tech", "value": True}
+        result = edit(add_locks=[bad])
+        assert result.get("lock_conflicts")
+        assert result["solve_result"] == good_solve_result
+        assert accepted_locks(result) == [lock]
 
         # Force every tech OUT of one weekend slot. Each lock is individually
         # valid, so validate_locks() passes, but weekend coverage (hard) becomes
         # unsatisfiable. The pipeline must fall back to the last good schedule
         # and pause at human_review again rather than dead-ending at explain.
-        breaking_locks = [lock] + [
+        breaking_locks = [
             {"person_id": db_id_by_name[f"Tech{i}"], "day": "Sat", "slot": 10, "role": "tech", "value": False}
             for i in range(1, 11)
         ]
-        result = app.invoke(Command(resume={"decision": "edit", "locked_assignments": breaking_locks}), config=config)
+        result = edit(add_locks=breaking_locks)
         assert not result.get("lock_conflicts")
         assert result.get("infeasibility_gaps")
-        assert "__interrupt__" in result
         assert result["solve_result"] == good_solve_result
+        # The failed edit is dropped: the accepted locks are still the ones
+        # the schedule on screen was solved with.
+        assert accepted_locks(result) == [lock]
 
-        # Recover with the good lock alone, then approve.
-        result = app.invoke(Command(resume={"decision": "edit", "locked_assignments": [lock]}), config=config)
+        # The next edit builds on the accepted locks, not the failed ones.
+        second = {"person_id": db_id_by_name["Asst11"], "day": "Mon", "slot": 4, "role": "assistant", "value": True}
+        result = edit(add_locks=[second])
         assert not result.get("infeasibility_gaps") and not result.get("lock_conflicts")
-        assert "__interrupt__" in result
+        assert accepted_locks(result) == [lock, second]
 
+        # An edit can remove a lock again.
+        result = edit(remove_locks=[lock])
+        assert not result.get("infeasibility_gaps") and not result.get("lock_conflicts")
+        assert accepted_locks(result) == [second]
+
+        # Approving saves the schedule, and the locks it was solved with,
+        # outside the pipeline's own state.
         final = app.invoke(Command(resume={"decision": "approved"}), config=config)
         assert final["final_schedule"] is not None
+        saved = crud.latest_schedule()
+        assert saved.id == final["schedule_id"]
+        assert saved.result == final["final_schedule"]
+        assert saved.locks == [second]

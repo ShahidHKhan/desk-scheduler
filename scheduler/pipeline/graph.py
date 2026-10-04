@@ -8,6 +8,8 @@ cycles at the roster-confirm, roster-completeness, and human-review gates:
     python -m scheduler.pipeline.graph
 """
 
+from dataclasses import asdict
+
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
@@ -20,6 +22,12 @@ from scheduler.pipeline.state import PipelineState
 from scheduler.solver.locks import validate_locks
 from scheduler.solver.model_input import LockedAssignment, Person, SolverInput
 from scheduler.solver.solve import solve as run_solver
+
+# Every interrupt payload carries one of these as "kind", so a UI can tell
+# which pause the run is at without inspecting the rest of the payload.
+ROSTER_CONFIRM = "roster_confirm"
+ROSTER_INCOMPLETE = "roster_incomplete"
+REVIEW = "review"
 
 
 def ingest_node(state: PipelineState) -> dict:
@@ -75,6 +83,7 @@ def roster_confirm_node(state: PipelineState) -> dict:
 
     decision = interrupt(
         {
+            "kind": ROSTER_CONFIRM,
             "message": "Confirm each parsed submission against the roster before committing.",
             "candidates": [
                 {
@@ -134,6 +143,7 @@ def roster_completeness_check_node(state: PipelineState) -> dict:
 
         interrupt(
             {
+                "kind": ROSTER_INCOMPLETE,
                 "message": (
                     "Solve is blocked: some roster rows are missing required "
                     "fields. Fill them in on the Roster panel, then continue."
@@ -197,14 +207,23 @@ def solve_node(state: PipelineState) -> dict:
         return {"solve_status": "SKIPPED", "infeasibility_gaps": state["validation_errors"], "lock_conflicts": []}
 
     data = _build_solver_input(state)
-    data.locked_assignments = state.get("locked_assignments") or []
+    # An edit's proposed locks if there are any, otherwise the accepted
+    # ones (none on a run's first solve). Every return below clears
+    # proposed_locks: it's consumed by this solve whether or not it works.
+    proposed = state.get("proposed_locks")
+    data.locked_assignments = proposed if proposed is not None else state.get("locked_assignments") or []
 
     # Catch a contradictory manual edit before it ever reaches coverage
     # diagnosis or the CP-SAT solve - a self-contradictory request shouldn't
     # burn solve time or get lumped in with a generic coverage gap.
     lock_conflicts = validate_locks(data)
     if lock_conflicts:
-        return {"solve_status": "LOCK_CONFLICT", "lock_conflicts": lock_conflicts, "infeasibility_gaps": []}
+        return {
+            "solve_status": "LOCK_CONFLICT",
+            "lock_conflicts": lock_conflicts,
+            "infeasibility_gaps": [],
+            "proposed_locks": None,
+        }
 
     # solve() already runs diagnose_coverage_gaps() internally and short-circuits
     # before the CP-SAT build if there's an obvious headcount gap - no need to
@@ -214,6 +233,8 @@ def solve_node(state: PipelineState) -> dict:
         return {
             "solve_status": result["status"],
             "solve_result": result,
+            "locked_assignments": data.locked_assignments,
+            "proposed_locks": None,
             "infeasibility_gaps": [],
             "lock_conflicts": [],
         }
@@ -224,10 +245,13 @@ def solve_node(state: PipelineState) -> dict:
     # known-good schedule - _route_after_solve uses its presence to decide
     # whether this failure has something to fall back to (loop back to
     # human_review) or is a first-ever failure with nothing to show (explain).
+    # locked_assignments is left alone for the same reason: it stays the
+    # locks that last-good schedule was solved with.
     return {
         "solve_status": result["status"],
         "infeasibility_gaps": result["coverage_gaps"] or ["Solver could not find a feasible schedule."],
         "lock_conflicts": [],
+        "proposed_locks": None,
     }
 
 
@@ -276,26 +300,57 @@ def human_review_node(state: PipelineState) -> Command:
 
     decision = interrupt(
         {
+            "kind": REVIEW,
             "message": message,
             "solve_status": state["solve_status"],
-            "hours_assigned": state["solve_result"]["hours_assigned"] if state["solve_result"] else {},
+            "people": state["solve_result"]["people"] if state["solve_result"] else [],
+            "locks": [asdict(lock) for lock in state.get("locked_assignments") or []],
             "infeasibility_gaps": gaps,
             "lock_conflicts": conflicts,
             "coverage_shortfalls": shortfalls,
         }
     )
+    # Resume with {"decision": "approved"} or {"decision": "rejected"}, or
+    # {"decision": "edit", "add_locks": [...], "remove_locks": [...]}.
     review_decision = decision.get("decision", "rejected")
     update = {"review_decision": review_decision}
     if review_decision == "edit":
-        update["locked_assignments"] = [
-            LockedAssignment(**raw_lock) for raw_lock in decision.get("locked_assignments", [])
-        ]
+        update["proposed_locks"] = _edit_locks(
+            state.get("locked_assignments") or [],
+            add=[LockedAssignment(**raw) for raw in decision.get("add_locks", [])],
+            remove=decision.get("remove_locks", []),
+        )
     return Command(update=update)
+
+
+def _lock_key(person_id: int, day: str, slot: int, role: str) -> tuple:
+    return (person_id, day, slot, role)
+
+
+def _edit_locks(
+    accepted: list[LockedAssignment], add: list[LockedAssignment], remove: list[dict]
+) -> list[LockedAssignment]:
+    """The accepted locks with an edit applied. `remove` entries name a
+    lock by person_id/day/slot/role. A lock added for a person, day, slot
+    and role that already has one replaces it, so flipping force-in to
+    force-out is a single edit."""
+    removed = {_lock_key(r["person_id"], r["day"], r["slot"], r["role"]) for r in remove}
+    added = {_lock_key(lock.person_id, lock.day, lock.slot, lock.role): lock for lock in add}
+    kept = [
+        lock
+        for lock in accepted
+        if _lock_key(lock.person_id, lock.day, lock.slot, lock.role) not in removed | added.keys()
+    ]
+    return kept + list(added.values())
 
 
 def output_node(state: PipelineState) -> dict:
     if state["review_decision"] == "approved":
-        return {"final_schedule": state["solve_result"]}
+        # Saved outside the pipeline's own state, which the next run
+        # starts over - see db.models.Schedule.
+        locks = [asdict(lock) for lock in state.get("locked_assignments") or []]
+        schedule = crud.save_schedule(state["solve_result"], locks)
+        return {"final_schedule": state["solve_result"], "schedule_id": schedule.id}
     return {"final_schedule": None, "review_notes": "Schedule was not approved."}
 
 
@@ -417,7 +472,8 @@ if __name__ == "__main__":
             print("Final solve_status:", final["solve_status"])
             print("Final schedule present:", final["final_schedule"] is not None)
             if final["final_schedule"]:
-                print("Sample hours_assigned:", dict(list(final["final_schedule"]["hours_assigned"].items())[:3]))
+                sample = final["final_schedule"]["people"][:3]
+                print("Sample hours assigned:", {p["name"]: p["hours_assigned"] for p in sample})
     finally:
         for person_id in inserted_ids:
             crud.delete_person(person_id)

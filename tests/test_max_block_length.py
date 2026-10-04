@@ -41,7 +41,7 @@ def test_no_single_block_exceeds_six_hours():
     assert result["feasible"], f"expected a feasible solve, got {result['status']}"
 
     monday_slots = sorted(
-        a["slot"] for a in result["assignments"] if a["person"] == "LongTech" and a["day"] == "Mon"
+        a["slot"] for a in result["assignments"] if a["name"] == "LongTech" and a["day"] == "Mon"
     )
     assert monday_slots, "expected the solver to actually use LongTech's Monday availability"
 

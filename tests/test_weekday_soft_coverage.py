@@ -16,7 +16,7 @@ import re
 
 from helpers import full_week_availability, generous_roster, make_person
 
-from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, WEEKDAYS, SolverInput
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, WEEKDAYS, SolverInput, slot_label
 from scheduler.solver.solve import solve
 
 
@@ -85,7 +85,7 @@ def test_weekday_shortfall_is_minimized_not_infeasible_and_visible_in_output():
     shortfalls = result["coverage_shortfalls"]
     assert shortfalls, "expected the forced shortfall to be visible in solver output, got none"
 
-    stuck_label = f"{STUCK_DAY} slot {STUCK_SLOT}"
+    stuck_label = slot_label(STUCK_DAY, STUCK_SLOT)
     stuck_messages = [m for m in shortfalls if m.startswith(stuck_label)]
     other_messages = [m for m in shortfalls if not m.startswith(stuck_label)]
 
@@ -105,5 +105,5 @@ def test_weekday_shortfall_is_minimized_not_infeasible_and_visible_in_output():
         (day, slot) for day in DAYS if day in WEEKDAYS for slot in OPERATING_SLOTS[day]
     } - {(STUCK_DAY, STUCK_SLOT)}
     for day, slot in all_weekday_slots:
-        label = f"{day} slot {slot}"
+        label = slot_label(day, slot)
         assert not any(m.startswith(label) for m in shortfalls), f"unexpected shortfall at {label}"

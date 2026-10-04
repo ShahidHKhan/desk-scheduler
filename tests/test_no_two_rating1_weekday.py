@@ -37,9 +37,9 @@ def test_two_rating1_people_never_share_a_weekday_slot():
 
     by_slot = {}
     for a in result["assignments"]:
-        if a["day"] != "Wed" or a["person"] not in ("Rating1A", "Rating1B"):
+        if a["day"] != "Wed" or a["name"] not in ("Rating1A", "Rating1B"):
             continue
-        by_slot.setdefault(a["slot"], set()).add(a["person"])
+        by_slot.setdefault(a["slot"], set()).add(a["name"])
 
     doubled_up = {slot: people for slot, people in by_slot.items() if len(people) > 1}
     assert not doubled_up, f"both rating-1 people were scheduled together at Wed slot(s): {doubled_up}"

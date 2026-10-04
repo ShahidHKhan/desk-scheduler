@@ -1,5 +1,5 @@
 """
-CRUD functions for the roster table.
+CRUD functions for the roster, in-app submissions and approved schedules.
 
 Plain functions, not tied to any particular UI framework, so the
 Streamlit app, the pipeline graph, and scripts can all call them
@@ -12,7 +12,15 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from scheduler.db.database import get_session
-from scheduler.db.models import MANUAL_FIELDS, ROLE_WEIGHTINGS, SUBMISSION_STATUSES, Roster, Submission
+from scheduler.db.models import (
+    EDITABLE_FIELDS,
+    MANUAL_FIELDS,
+    ROLE_WEIGHTINGS,
+    SUBMISSION_STATUSES,
+    Roster,
+    Schedule,
+    Submission,
+)
 
 
 class RosterValidationError(Exception):
@@ -153,12 +161,21 @@ def upsert_from_submission(
 
 
 def update_person(person_id: int, **fields) -> Roster:
-    """Update one or more fields for an existing person.
+    """Update one or more of EDITABLE_FIELDS for an existing person.
 
     Example: update_person(3, hours_requested=12, role_weighting="hybrid_2nd")
-    Raises RosterValidationError if the person doesn't exist or the update
-    violates a constraint.
+    Raises RosterValidationError if the person doesn't exist, a field isn't
+    editable, or the update violates a constraint.
     """
+    not_editable = sorted(set(fields) - set(EDITABLE_FIELDS))
+    if not_editable:
+        raise RosterValidationError(f"These fields can't be edited: {', '.join(not_editable)}")
+    role_weighting = fields.get("role_weighting")
+    if role_weighting is not None and role_weighting not in ROLE_WEIGHTINGS:
+        raise RosterValidationError(
+            f"role_weighting must be one of {ROLE_WEIGHTINGS}, got {role_weighting!r}"
+        )
+
     session = get_session()
     try:
         person = session.get(Roster, person_id)
@@ -166,8 +183,6 @@ def update_person(person_id: int, **fields) -> Roster:
             raise RosterValidationError(f"No person with id={person_id}")
 
         for key, value in fields.items():
-            if not hasattr(person, key):
-                raise RosterValidationError(f"Roster has no field {key!r}")
             setattr(person, key, value)
 
         session.commit()
@@ -264,5 +279,31 @@ def set_submission_status(submission_id: int, status: str, roster_id: int | None
         session.commit()
         session.refresh(submission)
         return submission
+    finally:
+        session.close()
+
+
+# --- Approved schedules ---------------------------------------------------
+
+
+def save_schedule(result: dict, locks: list[dict]) -> Schedule:
+    """Save an approved solver result and the locks it was solved with."""
+    session = get_session()
+    try:
+        schedule = Schedule(result_json=json.dumps(result), locks_json=json.dumps(locks))
+        session.add(schedule)
+        session.commit()
+        session.refresh(schedule)
+        return schedule
+    finally:
+        session.close()
+
+
+def latest_schedule() -> Schedule | None:
+    """The most recently approved schedule, or None if nothing's been approved yet."""
+    session = get_session()
+    try:
+        query = select(Schedule).order_by(Schedule.approved_at.desc(), Schedule.id.desc()).limit(1)
+        return session.execute(query).scalars().first()
     finally:
         session.close()

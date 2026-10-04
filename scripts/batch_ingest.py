@@ -56,6 +56,9 @@ def ingest_folder(folder: str) -> BatchResult:
 if __name__ == "__main__":
     import sys
 
+    from dotenv import load_dotenv
+
+    load_dotenv()  # GEMINI_API_KEY, for scanned PDFs
     if len(sys.argv) != 2:
         sys.exit("usage: python -m scripts.batch_ingest <folder>")
     folder = sys.argv[1]

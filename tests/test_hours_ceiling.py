@@ -26,5 +26,5 @@ def test_assigned_hours_never_exceed_requested_hours():
     result = solve(data, time_limit_seconds=15)
     assert result["feasible"], f"expected a feasible solve, got {result['status']}"
 
-    assigned = result["hours_assigned"].get("LowHoursTech", 0)
+    assigned = next(p["hours_assigned"] for p in result["people"] if p["person_id"] == low_hours.id)
     assert assigned <= 4, f"LowHoursTech assigned {assigned} hrs, exceeding their 4 hr request"

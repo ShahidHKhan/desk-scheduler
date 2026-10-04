@@ -1,8 +1,9 @@
 """
 SQLAlchemy models for the Service Desk Schedule Optimizer.
 
-A single flat roster table: no semester history, and CHECK constraints
-on the fixed-category fields so bad values can't be stored.
+A flat roster table (no semester history) with CHECK constraints on the
+fixed-category fields so bad values can't be stored, plus in-app
+availability submissions and approved schedules.
 """
 
 import json
@@ -25,6 +26,11 @@ ROLE_WEIGHTINGS = ("assistant_only", "hybrid_new", "hybrid_2nd", "tech_only")
 # the scheduler directly on the roster. A row missing any of these is
 # "incomplete" and blocks solve.
 MANUAL_FIELDS = ("role_weighting", "experience_rating", "proximity", "initials")
+
+# Everything crud.update_person() may change. Not id, and not
+# availability_json, which only a confirmed submission writes (see
+# crud.upsert_from_submission()).
+EDITABLE_FIELDS = ("name", "hours_requested", *MANUAL_FIELDS)
 
 # Lifecycle of an in-app availability submission (see Submission below).
 SUBMISSION_STATUSES = ("pending", "imported", "dismissed")
@@ -169,3 +175,36 @@ class Submission(Base):
             f"Submission(id={self.id!r}, name={self.name!r}, initials={self.initials!r}, "
             f"hours_requested={self.hours_requested!r}, status={self.status!r})"
         )
+
+
+class Schedule(Base):
+    """An approved schedule, saved when the manager approves it.
+
+    The pipeline's own state is per run - the next import starts it over -
+    so this table is what keeps an approved schedule. Each approval is a
+    new row; the newest is the current schedule. `result_json` is the
+    solver result (see solver/solve.py), which carries each person's name
+    and initials as they were at approval, so a saved schedule still reads
+    correctly after the roster changes.
+    """
+
+    __tablename__ = "schedules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    result_json: Mapped[str] = mapped_column(String, nullable=False)
+    # The manual edits (locks) the approved schedule was solved with.
+    locks_json: Mapped[str] = mapped_column(String, nullable=False, default="[]")
+
+    @property
+    def result(self) -> dict:
+        return json.loads(self.result_json)
+
+    @property
+    def locks(self) -> list[dict]:
+        return json.loads(self.locks_json)
+
+    def __repr__(self) -> str:
+        return f"Schedule(id={self.id!r}, approved_at={self.approved_at!r})"
