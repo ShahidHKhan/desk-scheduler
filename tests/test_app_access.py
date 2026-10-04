@@ -1,16 +1,14 @@
 """
-Sign-in and role separation in the Streamlit app: worker credentials open
-only the availability form, admin credentials open only the scheduler, and
-unset or blank credentials never let anyone in.
+Sign-in and role separation: worker credentials open only the availability
+form, manager credentials open only the scheduler, and unset or blank
+credentials never let anyone in.
 """
 
-import sys
-from pathlib import Path
-
 import pytest
-from streamlit.testing.v1 import AppTest
+from fastapi.testclient import TestClient
 
-APP = str(Path(__file__).resolve().parent.parent / "app.py")
+from web.main import app
+
 CREDS = {
     "APP_USERNAME": "worker",
     "APP_PASSWORD": "worker-pass",
@@ -19,12 +17,10 @@ CREDS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def fresh_component_registration(monkeypatch):
-    """The grid component registers with the Streamlit runtime when its
-    module is imported. Each AppTest run gets a new runtime, so drop the
-    cached module and let app.py import (and register) it again."""
-    monkeypatch.delitem(sys.modules, "scheduler.ui.availability_grid", raising=False)
+@pytest.fixture
+def client():
+    with TestClient(app) as c:
+        yield c
 
 
 @pytest.fixture
@@ -33,46 +29,53 @@ def configured(monkeypatch):
         monkeypatch.setenv(name, value)
 
 
-def sign_in(username: str, password: str) -> AppTest:
-    at = AppTest.from_file(APP, default_timeout=60).run()
-    at.text_input[0].input(username)
-    at.text_input[1].input(password)
-    at.button[0].click().run()
-    assert not at.exception, [e.value for e in at.exception]
-    return at
+def sign_in(client: TestClient, username: str, password: str):
+    return client.post("/login", data={"username": username, "password": password})
 
 
-def test_worker_sees_only_the_availability_form(configured):
-    at = sign_in("worker", "worker-pass")
-    assert at.session_state["role"] == "worker"
-    assert [t.value for t in at.title] == ["Submit Your Availability"]
-    assert len(at.tabs) == 0
-    assert any(b.label == "Submit availability" for b in at.button)
+def test_worker_sees_only_the_availability_form(client, configured):
+    page = sign_in(client, "worker", "worker-pass")
+    assert page.url.path == "/submit"
+    assert "Submit your availability" in page.text
+    assert "Import availability" not in page.text
+
+    blocked = client.get("/manager/roster", follow_redirects=False)
+    assert blocked.status_code == 303 and blocked.headers["location"] == "/submit"
 
 
-def test_admin_sees_only_the_scheduler(configured):
-    at = sign_in("boss", "boss-pass")
-    assert at.session_state["role"] == "admin"
-    assert [t.label for t in at.tabs] == ["Roster", "Import Availability", "Review & Edit", "Output"]
-    assert not any(b.label == "Submit availability" for b in at.button)
+def test_manager_sees_only_the_scheduler(client, configured):
+    page = sign_in(client, "boss", "boss-pass")
+    assert page.url.path == "/manager/roster"
+    for tab in ("Roster", "Import availability", "Review &amp; edit", "Output"):
+        assert tab in page.text
+
+    blocked = client.get("/submit", follow_redirects=False)
+    assert blocked.status_code == 303 and blocked.headers["location"] == "/manager"
 
 
-def test_wrong_password_is_rejected(configured):
-    at = sign_in("boss", "worker-pass")
-    assert "role" not in at.session_state
-    assert [e.value for e in at.error] == ["Invalid username or password."]
+def test_wrong_password_is_rejected(client, configured):
+    page = sign_in(client, "boss", "worker-pass")
+    assert page.status_code == 401
+    assert "Invalid username or password." in page.text
+    assert client.get("/manager/roster", follow_redirects=False).headers["location"] == "/login"
 
 
-def test_blank_credentials_never_sign_in(monkeypatch):
+def test_blank_credentials_never_sign_in(client, monkeypatch):
     for name in CREDS:
         monkeypatch.setenv(name, "")
-    at = sign_in("", "")
-    assert "role" not in at.session_state
-    assert at.error
+    assert sign_in(client, "", "").status_code == 401
+    assert client.get("/submit", follow_redirects=False).headers["location"] == "/login"
 
 
-def test_sign_out_returns_to_sign_in(configured):
-    at = sign_in("worker", "worker-pass")
-    next(b for b in at.button if b.label == "Sign out").click().run()
-    assert "role" not in at.session_state
-    assert any(b.label == "Sign in" for b in at.button)
+def test_sign_out_returns_to_sign_in(client, configured):
+    sign_in(client, "worker", "worker-pass")
+    page = client.post("/logout")
+    assert page.url.path == "/login"
+    assert client.get("/submit", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_htmx_request_without_a_session_loads_the_sign_in_page(client):
+    # A redirect would be swapped into the panel; HTMX is told to navigate instead.
+    response = client.get("/manager/review", headers={"HX-Request": "true"}, follow_redirects=False)
+    assert response.status_code == 200
+    assert response.headers["HX-Redirect"] == "/login"

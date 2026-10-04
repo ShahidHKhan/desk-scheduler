@@ -4,6 +4,7 @@
 ![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![OR-Tools CP-SAT](https://img.shields.io/badge/solver-OR--Tools%20CP--SAT-4285F4)
 ![LangGraph](https://img.shields.io/badge/orchestration-LangGraph-1C3C3C)
+![FastAPI + HTMX](https://img.shields.io/badge/web-FastAPI%20%2B%20HTMX-009688?logo=fastapi&logoColor=white)
 ![Postgres](https://img.shields.io/badge/db-Postgres%20%2F%20Supabase-4169E1?logo=postgresql&logoColor=white)
 ![Fly.io](https://img.shields.io/badge/deployed%20on-Fly.io-8B5CF6)
 
@@ -80,27 +81,31 @@ Rule numbers match the comments in `scheduler/solver/build_model.py`. The hybrid
 | LLMs | Gemini 2.5 Flash for scanned-form parsing and as an eval judge |
 | Data | SQLAlchemy, Postgres on Supabase (SQLite locally) |
 | Ingestion | openpyxl, pdfplumber |
-| UI | Streamlit, with a custom drag-to-select grid component |
+| Web app | FastAPI, Jinja2 templates and HTMX; the drag-to-select availability grid is plain JavaScript |
 | Quality | pytest, ruff, GitHub Actions |
 | Deployment | Docker on Fly.io |
 
 ## Project layout
 
 ```
-app.py                  Streamlit UI: sign-in, worker availability form, manager scheduler tabs
+web/
+  main.py               FastAPI app: sessions, static files, sign-in redirects
+  auth.py               Shared role sign-in and the route guards
+  routes/               The worker's availability form; the manager's roster, import, review and output tabs
+  templates/            Jinja2 pages and the HTMX partials each action swaps in
+  static/               CSS, the availability grid script, vendored htmx
 scheduler/
   db/                   SQLAlchemy models (roster, submissions, schedules), engine setup, CRUD
   ingest/               xlsx / pdf parsers, Gemini vision fallback, in-app form, name matching
   solver/               CP-SAT model, solve, pre-solve diagnosis, lock validation
   pipeline/             LangGraph graph and state, run lifecycle and checkpointer, display tables
   evals/                LLM-as-judge for infeasibility explanations
-  ui/                   Drag-to-select availability grid (Streamlit custom component)
 scripts/batch_ingest.py Parse a folder of submissions from the command line
 tests/                  pytest suite
 Dockerfile, fly.toml    Container and Fly.io deployment
 ```
 
-Only `app.py` and `scheduler/ui/` depend on Streamlit. Everything else is framework-free, which keeps the planned frontend change contained.
+`scheduler/` has no web code at all. Each route in `web/` reads a form, calls one `scheduler` function and renders a template; an HTMX request gets back just the part of the page that changed.
 
 ## Running locally
 
@@ -112,7 +117,7 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 cp .env.example .env               # then fill in the values below
 
-streamlit run app.py               # http://localhost:8501 (creates the tables on first run)
+uvicorn web.main:app --reload      # http://localhost:8000 (creates the tables on first run)
 ```
 
 | Variable | Needed for |
@@ -121,6 +126,7 @@ streamlit run app.py               # http://localhost:8501 (creates the tables o
 | `ADMIN_APP_USERNAME`, `ADMIN_APP_PASSWORD` | Manager sign-in: opens the scheduler |
 | `GEMINI_API_KEY` | Scanned-PDF parsing and the live judge test (optional otherwise) |
 | `DATABASE_URL` | Postgres. Leave empty to use local SQLite (`DATABASE_PATH`, default `roster.db`) |
+| `SESSION_SECRET` | Signs the session cookie. Without it, everyone is signed out whenever the app restarts |
 | `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | Optional LangSmith tracing of the pipeline |
 
 Self-contained demos with synthetic data:
@@ -137,13 +143,13 @@ pytest -q
 ruff check .
 ```
 
-The suite runs real solves and checks the output against each hard rule. It also covers coverage under shortage, infeasibility diagnosis, the full edit/re-solve/approve loop through LangGraph, run isolation and restart recovery, role-based access, and the LLM judge, whose live Gemini test skips when no key is set. CI runs lint and tests on every push and pull request.
+The suite runs real solves and checks the output against each hard rule. It also covers coverage under shortage, infeasibility diagnosis, the full edit/re-solve/approve loop through LangGraph, run isolation and restart recovery, the web app end to end over HTTP (a worker submits, the manager runs, edits, approves and downloads), role-based access, and the LLM judge, whose live Gemini test skips when no key is set. CI runs lint and tests on every push and pull request.
 
 Tests always use throwaway SQLite databases. `tests/conftest.py` blanks `DATABASE_URL` before anything loads `.env`, so the suite can never reach a real database. The Postgres checkpointer and row-level security tests run only when `TEST_POSTGRES_URL` points at a disposable database, for example one started with Docker.
 
 ## Deployment
 
-The app runs as a single Docker container on [Fly.io](https://fly.io), scaled to zero when idle. The roster, submissions, approved schedules and the pipeline's checkpoints live in [Supabase](https://supabase.com) Postgres. The app turns on row-level security for every table it creates, which closes them to Supabase's built-in REST API; the app owns the tables, so it isn't affected. Secrets are set with `flyctl secrets`.
+The app runs as a single Docker container on [Fly.io](https://fly.io), scaled to zero when idle. The roster, submissions, approved schedules and the pipeline's checkpoints live in [Supabase](https://supabase.com) Postgres. The app turns on row-level security for every table it creates, which closes them to Supabase's built-in REST API; the app owns the tables, so it isn't affected. Secrets, including `SESSION_SECRET`, are set with `flyctl secrets`.
 
 ```bash
 flyctl deploy
@@ -153,6 +159,5 @@ It runs on a single machine on purpose: the guard that stops two requests from a
 
 ## Roadmap
 
-- **HTMX frontend.** Replace Streamlit with FastAPI, Jinja2 templates and HTMX, keeping `scheduler/` unchanged.
 - **Richer objective.** Add the hybrid role ratios, proximity and the weekend cap.
 - **More real inputs.** Validate the PDF and scanned-PDF paths against more real submissions.

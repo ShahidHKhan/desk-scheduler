@@ -3,8 +3,8 @@ Runs the scheduling pipeline on behalf of a UI.
 
 Owns the compiled graph, its checkpointer and the one in-flight run, so a
 front end only calls start_run(), current_state() and resume(). Free of
-any UI framework, like the rest of scheduler/: the Streamlit app calls it
-now, and a web front end can call the same functions.
+any UI framework, like the rest of scheduler/: the web app (web/) calls
+these and nothing else of the pipeline.
 
 Single-user tool: one in-flight run at a time is an accepted
 simplification, not an oversight. Every call talks to the same thread,
@@ -48,8 +48,8 @@ CHECKPOINT_TABLES = ("checkpoints", "checkpoint_blobs", "checkpoint_writes", "ch
 # run's "last good" fallback if that solve fails.
 _FRESH_STATE = dict.fromkeys(PipelineState.__annotations__)
 
-# Held by every call that advances the run. Streamlit reruns and web
-# requests run on separate threads, and two resumes of the same pause (a
+# Held by every call that advances the run. Web requests run on
+# separate threads, and two resumes of the same pause (a
 # double-clicked button, a second tab) must not interleave.
 _run_lock = threading.Lock()
 

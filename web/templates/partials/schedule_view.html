@@ -1,0 +1,55 @@
+{# The schedule grid, hours per person and any understaffed weekday slots. #}
+<section class="card schedule-card">
+  <div class="table-wrap">
+    <table class="schedule">
+      <caption class="sr-only">Weekly schedule: initials of who works each half hour</caption>
+      <thead><tr><th scope="col">Time</th>{% for day in grid.days %}<th scope="col">{{ day }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for time, cells in grid.rows %}
+        <tr>
+          <th scope="row">{{ time }}</th>
+          {% for cell in cells %}
+          {% if cell == "Closed" %}<td class="closed"><span class="sr-only">Closed</span></td>
+          {% else %}<td{% if not cell %} class="gap"{% endif %}>{{ cell }}</td>{% endif %}
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="legend"><span><i class="swatch closed"></i>Desk closed</span><span><i class="swatch gap"></i>Nobody scheduled</span></p>
+</section>
+
+<div class="two-col">
+  <section class="card">
+    <h2>Hours</h2>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th scope="col">Name</th><th scope="col">Initials</th><th scope="col" class="num">Wanted</th><th scope="col" class="num">Scheduled</th></tr></thead>
+        <tbody>
+          {% for row in hours %}
+          <tr>
+            <td>{{ row["Name"] }}</td>
+            <td>{{ row["Initials"] }}</td>
+            <td class="num">{{ row["Hours requested"] }}</td>
+            <td class="num">{{ "%g"|format(row["Hours assigned"]) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Coverage</h2>
+    {% if shortfalls %}
+    <p class="msg warning">{{ shortfalls|length }} weekday {{ "slot falls" if shortfalls|length == 1 else "slots fall" }} short of 2 assistants + 2 techs.</p>
+    <details class="shortfalls">
+      <summary>Show which</summary>
+      <ul>{% for s in shortfalls %}<li>{{ s }}</li>{% endfor %}</ul>
+    </details>
+    {% else %}
+    <p class="msg success">Every weekday slot has 2 assistants and 2 techs.</p>
+    {% endif %}
+  </section>
+</div>

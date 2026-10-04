@@ -2,7 +2,7 @@
 CRUD functions for the roster, in-app submissions and approved schedules.
 
 Plain functions, not tied to any particular UI framework, so the
-Streamlit app, the pipeline graph, and scripts can all call them
+web app, the pipeline graph, and scripts can all call them
 directly. Each function opens and closes its own session.
 """
 

@@ -7,7 +7,7 @@ Entry point for ingestion: routes a submitted file to the right parser.
 _vision_fallback() calls Gemini (Google AI Studio) to read scanned/
 image-based PDF submissions that pdf_parser.py's text-layer extraction
 can't handle. Needs GEMINI_API_KEY in the environment (see .env.example);
-loading .env is the entry point's job (app.py, scripts), not this
+loading .env is the entry point's job (web/main.py, scripts), not this
 module's. If Gemini's output doesn't parse cleanly, this fails loudly
 rather than guessing.
 """

@@ -1,0 +1,84 @@
+<div class="panel-head"><h1>Review &amp; edit</h1></div>
+{% include "partials/messages.html" %}
+
+{% if not waiting %}
+<p class="empty">
+  {% if has_approved %}Nothing is waiting for review. The latest approved schedule is on the
+  <a href="/manager/output" hx-get="/manager/output" hx-target="#panel" hx-push-url="true">Output</a> tab.
+  {% else %}No schedule yet. Start a run from
+  <a href="/manager/import" hx-get="/manager/import" hx-target="#panel" hx-push-url="true">Import availability</a>.{% endif %}
+</p>
+
+{% else %}
+<div class="review-head">
+  <p class="msg {{ 'warning' if failed else 'info' }}">{{ pause.message }}</p>
+  <div class="actions">
+    <button class="btn primary" type="button" hx-post="/manager/review/decide" hx-vals='{"decision": "approved"}'
+            hx-target="#panel" hx-disabled-elt="this">Approve</button>
+    <button class="btn quiet" type="button" hx-post="/manager/review/decide" hx-vals='{"decision": "rejected"}'
+            hx-target="#panel" hx-disabled-elt="this"
+            hx-confirm="Reject this schedule? You'll need to start a new run to get another.">Reject</button>
+  </div>
+</div>
+{% for problem in pause.lock_conflicts + pause.infeasibility_gaps %}
+<p class="msg error">{{ problem }}</p>
+{% endfor %}
+
+{% include "partials/schedule_view.html" %}
+
+<div class="two-col">
+  <section class="card">
+    <h2>Edit a slot</h2>
+    <p class="muted">Force someone into or out of a half hour. The week is solved again around it, which can take up to 30 seconds.</p>
+    <form class="stack" hx-post="/manager/review/edit" hx-target="#panel" hx-disabled-elt="find button"
+          hx-indicator="#edit-indicator">
+      <div class="row">
+        <label class="field grow">
+          <span>Person</span>
+          <select id="edit-person" name="person_id">
+            {% for id, label in person_options %}<option value="{{ id }}">{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+        <label class="field">
+          <span>Day</span>
+          <select id="edit-day" name="day">{% for day in days %}<option>{{ day }}</option>{% endfor %}</select>
+        </label>
+        <label class="field">
+          <span>Half hour starting</span>
+          <select id="edit-slot" name="slot">{% for slot, label in slot_options %}<option value="{{ slot }}">{{ label }}</option>{% endfor %}</select>
+        </label>
+        <label class="field">
+          <span>Role</span>
+          <select id="edit-role" name="role">{% for role in roles %}<option>{{ role }}</option>{% endfor %}</select>
+        </label>
+      </div>
+      <fieldset class="choices inline">
+        <legend>Force</legend>
+        <label><input type="radio" name="force" value="in" checked> Into this slot</label>
+        <label><input type="radio" name="force" value="out"> Out of this slot</label>
+      </fieldset>
+      <div class="actions">
+        <button class="btn" type="submit">Apply edit</button>
+        <span id="edit-indicator" class="htmx-indicator working">Re-solving…</span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Your edits</h2>
+    {% if locks %}
+    <ul class="edits">
+      {% for lock in locks %}
+      <li>
+        <span><strong>{{ lock.name }}</strong> forced {{ "into" if lock.value else "out of" }} {{ lock.role }} on {{ lock.where }}</span>
+        <button class="btn quiet small" type="button" hx-post="/manager/review/remove" hx-vals='{{ lock.key|tojson }}'
+                hx-target="#panel" hx-disabled-elt="this" hx-indicator="#edit-indicator">Remove</button>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty">No edits yet. This schedule is exactly what the solver produced.</p>
+    {% endif %}
+  </section>
+</div>
+{% endif %}

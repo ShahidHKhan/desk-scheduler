@@ -1,0 +1,48 @@
+{% from "partials/macros.html" import person_fields %}
+<div class="panel-head">
+  <h1>Roster</h1>
+  <a class="filter" href="/manager/roster{{ '' if show_incomplete else '?incomplete=true' }}"
+     hx-get="/manager/roster{{ '' if show_incomplete else '?incomplete=true' }}" hx-target="#panel">
+    {{ "Show everyone" if show_incomplete else "Show incomplete only" }}
+  </a>
+</div>
+{% include "partials/messages.html" %}
+{% if incomplete_count %}
+<p class="msg warning">{{ incomplete_count }} {{ "person is" if incomplete_count == 1 else "people are" }} missing required fields. Solving is blocked until they're filled in.</p>
+{% endif %}
+
+{% if people %}
+<div class="people">
+  {% for p in people %}
+  <details class="person{% if not p.is_complete %} incomplete{% endif %}" {% if not p.is_complete %}open{% endif %}>
+    <summary>
+      <span class="person-name">{{ p.name }}</span>
+      {% if p.initials %}<span class="initials">{{ p.initials }}</span>{% endif %}
+      <span class="person-meta">{{ role_weighting_label(p.role_weighting) }} · {{ p.hours_requested or "?" }} h</span>
+      {% if not p.is_complete %}<span class="pill warn">Missing {{ p.missing_fields|map("field_label")|join(", ") }}</span>{% endif %}
+    </summary>
+    <form class="stack" hx-post="/manager/roster/{{ p.id }}" hx-target="#panel" hx-disabled-elt="find button">
+      <input type="hidden" name="show_incomplete" value="{{ 'true' if show_incomplete else 'false' }}">
+      {{ person_fields("p" ~ p.id, p, role_weightings, experience_labels, proximity_labels, hours_min, hours_max) }}
+      <div class="actions">
+        <button class="btn primary" type="submit">Save</button>
+        <button class="btn danger" type="button" hx-post="/manager/roster/{{ p.id }}/delete"
+                hx-confirm="Remove {{ p.name }} from the roster?">Remove</button>
+      </div>
+    </form>
+  </details>
+  {% endfor %}
+</div>
+{% elif show_incomplete %}
+<p class="empty">Everyone on the roster is complete.</p>
+{% else %}
+<p class="empty">The roster is empty. People are added when their submissions are confirmed in a run, or you can add someone below.</p>
+{% endif %}
+
+<section class="card">
+  <h2>Add person</h2>
+  <form class="stack" hx-post="/manager/roster" hx-target="#panel" hx-disabled-elt="find button">
+    {{ person_fields("new", none, role_weightings, experience_labels, proximity_labels, hours_min, hours_max) }}
+    <div><button class="btn" type="submit">Add person</button></div>
+  </form>
+</section>

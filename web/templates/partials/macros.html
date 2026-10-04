@@ -1,0 +1,40 @@
+{% macro rating_slider(id, name, label, labels, value) %}
+{% set low = labels|min %}{% set high = labels|max %}
+<div class="field rating">
+  <span class="rating-head"><label for="{{ id }}">{{ label }}</label><output for="{{ id }}">{{ labels.get(value, value) }}</output></span>
+  <input id="{{ id }}" name="{{ name }}" type="range" min="{{ low }}" max="{{ high }}" step="1" value="{{ value }}"
+         data-labels='{{ labels|tojson }}'>
+  <span class="rating-ends"><span>{{ labels[low] }}</span><span>{{ labels[high] }}</span></span>
+</div>
+{% endmacro %}
+
+{% macro person_fields(prefix, person, role_weightings, experience_labels, proximity_labels, hours_min, hours_max) %}
+<div class="person-fields">
+  <label class="field">
+    <span>Name</span>
+    <input id="{{ prefix }}-name" name="name" value="{{ person.name if person else '' }}" required>
+  </label>
+  <label class="field">
+    <span>Initials</span>
+    <input id="{{ prefix }}-initials" name="initials" value="{{ (person.initials or '') if person else '' }}" maxlength="4">
+  </label>
+  <label class="field">
+    <span>Role weighting</span>
+    <select id="{{ prefix }}-role" name="role_weighting">
+      {% if not person or not person.role_weighting %}<option value="">Choose a role</option>{% endif %}
+      {% for value in role_weightings %}
+      <option value="{{ value }}" {% if person and person.role_weighting == value %}selected{% endif %}>{{ role_weighting_label(value) }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="field">
+    <span>Hours requested</span>
+    <input id="{{ prefix }}-hours" name="hours_requested" type="number" min="{{ hours_min }}" max="{{ hours_max }}" step="1"
+           value="{{ (person.hours_requested or 10) if person else 10 }}" required>
+  </label>
+</div>
+<div class="person-ratings">
+  {{ rating_slider(prefix ~ "-experience", "experience_rating", "Experience rating", experience_labels, (person.experience_rating or 2) if person else 2) }}
+  {{ rating_slider(prefix ~ "-proximity", "proximity", "Proximity", proximity_labels, (person.proximity or 2) if person else 2) }}
+</div>
+{% endmacro %}

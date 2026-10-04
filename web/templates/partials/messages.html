@@ -1,0 +1,3 @@
+{% for level, text in messages %}
+<p class="msg {{ level }}" role="{{ 'alert' if level == 'error' else 'status' }}">{{ text }}</p>
+{% endfor %}

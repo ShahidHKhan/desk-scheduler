@@ -1,0 +1,71 @@
+<div class="panel-head"><h1>Import availability</h1></div>
+{% include "partials/messages.html" %}
+
+{% if kind == "roster_confirm" %}
+  {% include "partials/import_confirm.html" %}
+
+{% elif kind == "roster_incomplete" %}
+  {% include "partials/import_incomplete.html" %}
+
+{% elif kind == "review" %}
+  <p class="msg success">Import complete.
+    <a href="/manager/review" hx-get="/manager/review" hx-target="#panel" hx-push-url="true">Continue to Review &amp; edit</a>.</p>
+
+{% else %}
+  {% if failed_notes %}
+  <div class="msg error">
+    <p><strong>The last run ended without a schedule.</strong></p>
+    <pre>{{ failed_notes }}</pre>
+  </div>
+  {% endif %}
+
+  <form class="stack" hx-post="/manager/import/run" hx-target="#panel" hx-encoding="multipart/form-data"
+        hx-disabled-elt="find button" hx-indicator="#run-indicator">
+    <section class="card">
+      <h2>In-app submissions</h2>
+      {% if pending %}
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th scope="col">Include</th><th scope="col">Name</th><th scope="col">Initials</th>
+            <th scope="col" class="num">Hours wanted</th><th scope="col" class="num">Hours marked</th><th scope="col">Submitted</th></tr></thead>
+          <tbody>
+            {% for s in pending %}
+            <tr>
+              <td><input id="include-{{ s.id }}" type="checkbox" name="include" value="{{ s.id }}" checked
+                         aria-label="Include {{ s.name }}"></td>
+              <td>{{ s.name }}</td>
+              <td>{{ s.initials }}</td>
+              <td class="num">{{ s.hours_requested }}</td>
+              <td class="num{% if s.hours_available < s.hours_requested %} short{% endif %}">{{ "%g"|format(s.hours_available) }}</td>
+              <td>{{ s.submitted }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if duplicate_names %}
+      <p class="msg warning">More than one pending submission for {{ duplicate_names|join(", ") }}. Untick the older one, or the last one confirmed will overwrite the others.</p>
+      {% endif %}
+      <div class="actions">
+        <button class="btn quiet" type="button" hx-post="/manager/import/dismiss" hx-indicator="this"
+                hx-confirm="Dismiss the ticked submissions? They won't be used in any run.">Dismiss ticked</button>
+      </div>
+      {% else %}
+      <p class="empty">No pending submissions. Workers send theirs from the Submit availability page.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Uploaded files</h2>
+      <label class="field">
+        <span>Availability forms (.xlsx or .pdf)</span>
+        <input id="files" name="files" type="file" multiple accept=".xlsx,.pdf">
+      </label>
+    </section>
+
+    <div class="actions">
+      <button class="btn primary" type="submit">Run pipeline</button>
+      <span id="run-indicator" class="htmx-indicator working">Reading submissions…</span>
+    </div>
+  </form>
+{% endif %}

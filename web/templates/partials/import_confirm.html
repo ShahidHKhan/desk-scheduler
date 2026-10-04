@@ -1,0 +1,35 @@
+<p class="msg info">{{ pause.message }} Nothing is written to the roster until you confirm.</p>
+<form class="stack" hx-post="/manager/import/confirm" hx-target="#panel" hx-disabled-elt="find button"
+      hx-indicator="#confirm-indicator">
+  {% for c in candidates %}
+  <fieldset class="card confirm-row" data-confirm-row>
+    <legend>
+      <strong>{{ c.parsed_name or "(no name)" }}</strong>
+      <span class="muted">· {{ c.hours_requested if c.hours_requested is not none else "?" }} h wanted</span>
+    </legend>
+    <p class="muted">
+      {{ "Submitted in the app." if c.from_app else "From file " ~ c.source_name ~ "." }}
+      {% if c.suggested_match_id is not none %}Matches roster entry <strong>{{ c.suggested_match_name }}</strong>.
+      {% else %}No roster entry with this name.{% endif %}
+    </p>
+    <div class="choices">
+      {% if c.suggested_match_id is not none %}
+      <label><input type="radio" name="action_{{ c.index }}" value="confirm" checked> Confirm match</label>
+      {% endif %}
+      {% if person_options %}
+      <span class="choice-with-select">
+        <label><input type="radio" name="action_{{ c.index }}" value="choose_other"> Different person:</label>
+        <select id="person-{{ c.index }}" name="person_{{ c.index }}" aria-label="Which roster entry {{ c.parsed_name }} is">
+          {% for id, label in person_options %}<option value="{{ id }}">{{ label }}</option>{% endfor %}
+        </select>
+      </span>
+      {% endif %}
+      <label><input type="radio" name="action_{{ c.index }}" value="new" {% if c.suggested_match_id is none %}checked{% endif %}> Add as new person</label>
+    </div>
+  </fieldset>
+  {% endfor %}
+  <div class="actions">
+    <button class="btn primary" type="submit">Confirm all</button>
+    <span id="confirm-indicator" class="htmx-indicator working">Saving, then solving the week. This can take up to 30 seconds…</span>
+  </div>
+</form>

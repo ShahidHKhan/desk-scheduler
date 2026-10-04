@@ -1,0 +1,25 @@
+<form id="submit-form" class="card stack" hx-post="/submit" hx-target="this" hx-swap="outerHTML"
+      hx-disabled-elt="find button[type=submit]">
+  {% include "partials/messages.html" %}
+  <div class="row">
+    <label class="field grow">
+      <span>Full name</span>
+      <input id="sub-name" name="name" value="{{ name }}" autocomplete="name" required>
+    </label>
+    <label class="field">
+      <span>Initials</span>
+      <input id="sub-initials" name="initials" value="{{ initials }}" maxlength="4" size="5" required>
+    </label>
+    <label class="field">
+      <span>Hours wanted / week</span>
+      <input id="sub-hours" name="hours_requested" type="number" min="{{ hours_min }}" max="{{ hours_max }}" step="1" value="{{ hours }}" required>
+    </label>
+  </div>
+  <div class="ag-mount" data-availability-grid
+       data-days='{{ days|tojson }}' data-times='{{ times|tojson }}'
+       data-open='{{ open_mask|tojson }}' data-initial='{{ grid|tojson }}'>
+    <input type="hidden" name="grid" value='{{ grid|tojson }}'>
+    <noscript><p class="msg error">The availability grid needs JavaScript turned on.</p></noscript>
+  </div>
+  <div><button class="btn primary" type="submit">Submit availability</button></div>
+</form>

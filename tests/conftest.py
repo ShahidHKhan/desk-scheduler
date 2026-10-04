@@ -15,8 +15,8 @@ _tmpdir = tempfile.mkdtemp(prefix="scheduler_pytest_")
 os.environ["DATABASE_PATH"] = os.path.join(_tmpdir, "test_roster.db")
 os.environ["CHECKPOINT_PATH"] = os.path.join(_tmpdir, "test_checkpoints.db")
 # Tests must never reach the real database that .env's DATABASE_URL points
-# at. Set it to empty, not deleted: load_dotenv() - below, and in app.py
-# when test_app_access.py runs it - never overrides a variable that's
+# at. Set it to empty, not deleted: load_dotenv() - below, and in
+# web/main.py when the web tests import it - never overrides a variable that's
 # already set, but would fill in a missing one. Empty means SQLite to both
 # database.py and the checkpointer.
 os.environ["DATABASE_URL"] = ""

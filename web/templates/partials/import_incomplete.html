@@ -1,0 +1,14 @@
+<div class="msg error">
+  <p><strong>{{ pause.message }}</strong></p>
+  <ul>
+    {% for row in pause.incomplete_rows %}
+    <li><strong>{{ row.name }}</strong>: missing {{ row.missing_fields|map("field_label")|join(", ") }}</li>
+    {% endfor %}
+  </ul>
+</div>
+<p>Fill these in on the <a href="/manager/roster?incomplete=true" hx-get="/manager/roster?incomplete=true" hx-target="#panel" hx-push-url="/manager/roster">Roster</a> tab, then come back and recheck.</p>
+<div class="actions">
+  <button class="btn primary" type="button" hx-post="/manager/import/recheck" hx-target="#panel"
+          hx-disabled-elt="this" hx-indicator="#recheck-indicator">Recheck roster</button>
+  <span id="recheck-indicator" class="htmx-indicator working">Checking, then solving the week…</span>
+</div>

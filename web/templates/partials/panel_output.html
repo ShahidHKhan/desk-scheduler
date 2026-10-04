@@ -1,0 +1,13 @@
+<div class="panel-head">
+  <h1>Output</h1>
+  {% if schedule %}<a class="btn" href="/manager/output.csv" download>Download CSV</a>{% endif %}
+</div>
+{% include "partials/messages.html" %}
+
+{% if not schedule %}
+<p class="empty">No approved schedule yet. Approve one on the
+  <a href="/manager/review" hx-get="/manager/review" hx-target="#panel" hx-push-url="true">Review &amp; edit</a> tab.</p>
+{% else %}
+<p class="muted">Approved {{ approved }}. This stays the current schedule until you approve another.</p>
+{% include "partials/schedule_view.html" %}
+{% endif %}

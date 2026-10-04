@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ tabs[tab] }} · Service Desk Scheduler{% endblock %}
+{% block page_class %}wide{% endblock %}
+{% block content %}
+{% include "partials/tabs.html" %}
+<div id="panel" class="panel">
+  {% include "partials/panel_" ~ tab ~ ".html" %}
+</div>
+{% endblock %}

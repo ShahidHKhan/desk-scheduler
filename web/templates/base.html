@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Service Desk Scheduler{% endblock %}</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/grid.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Service Desk Scheduler</a>
+    {% if role %}
+    <div class="session">
+      <span class="who">{{ "Manager" if role == "admin" else "Worker" }}</span>
+      <form method="post" action="/logout"><button class="btn quiet small" type="submit">Sign out</button></form>
+    </div>
+    {% endif %}
+  </header>
+  <main class="page {% block page_class %}{% endblock %}">
+    {% block content %}{% endblock %}
+  </main>
+  <div id="error-banner" class="banner" role="alert" hidden></div>
+</body>
+</html>

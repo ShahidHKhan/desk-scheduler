@@ -1,0 +1,8 @@
+<nav id="tabs" class="tabs" aria-label="Scheduler sections"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% for key, label in tabs.items() %}
+  <a href="/manager/{{ key }}" hx-get="/manager/{{ key }}" hx-target="#panel" hx-push-url="true"
+     {% if key == tab %}aria-current="page"{% endif %}>
+    {{ label }}{% if key == "import" and pending_count %}<span class="badge" title="Pending in-app submissions">{{ pending_count }}</span>{% endif %}
+  </a>
+  {% endfor %}
+</nav>
