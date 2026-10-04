@@ -45,6 +45,20 @@ def ensure_schema() -> None:
     database.init_db()
 
 
+# What the ends of each rating scale mean, shown under the slider. Rating 1
+# is the newest staff (the solver never pairs two of them on a weekday);
+# proximity is how far from campus someone lives.
+EXPERIENCE_LABELS = {1: "1 · Newest", 4: "4 · Most experienced"}
+PROXIMITY_LABELS = {1: "1 · On campus", 2: "2 · In town", 3: "3 · Out of town"}
+
+
+def _rating_slider(label: str, labels: dict[int, str], low: int, high: int, value: int) -> int:
+    """A slider from low to high whose ends are labelled with what they mean."""
+    return st.select_slider(
+        label, options=list(range(low, high + 1)), value=value, format_func=lambda v: labels.get(v, str(v))
+    )
+
+
 def _person_label(person) -> str:
     return f"{person.name} ({person.initials})" if person.initials else person.name
 
@@ -145,10 +159,10 @@ def render_roster_tab():
                     "Role weighting", role_weighting_options,
                     index=role_weighting_options.index(current_role_weighting),
                 )
-                experience_rating = st.slider(
-                    "Experience rating", 1, 4, person.experience_rating if person.experience_rating else 2
+                experience_rating = _rating_slider(
+                    "Experience rating", EXPERIENCE_LABELS, 1, 4, person.experience_rating or 2
                 )
-                proximity = st.slider("Proximity", 1, 3, person.proximity if person.proximity else 2)
+                proximity = _rating_slider("Proximity", PROXIMITY_LABELS, 1, 3, person.proximity or 2)
                 hours_requested = st.number_input(
                     "Hours requested", min_value=3, max_value=20,
                     value=person.hours_requested if person.hours_requested else 10, step=1,
@@ -183,8 +197,8 @@ def render_roster_tab():
         name = st.text_input("Name")
         initials = st.text_input("Initials")
         role_weighting = st.selectbox("Role weighting", ROLE_WEIGHTINGS)
-        experience_rating = st.slider("Experience rating", 1, 4, 2)
-        proximity = st.slider("Proximity", 1, 3, 2)
+        experience_rating = _rating_slider("Experience rating", EXPERIENCE_LABELS, 1, 4, 2)
+        proximity = _rating_slider("Proximity", PROXIMITY_LABELS, 1, 3, 2)
         hours_requested = st.number_input("Hours requested", min_value=3, max_value=20, value=10, step=1)
         submitted = st.form_submit_button("Add person")
 

@@ -1,4 +1,4 @@
-app = "service-desk-scheduler"
+app = "desk-scheduler"
 primary_region = "yyz"
 
 [build]
