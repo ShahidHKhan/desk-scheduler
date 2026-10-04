@@ -1,38 +1,49 @@
 # Service Desk Scheduler
 
 [![tests](https://github.com/ShahidHKhan/scheduler/actions/workflows/tests.yml/badge.svg)](https://github.com/ShahidHKhan/scheduler/actions/workflows/tests.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![OR-Tools CP-SAT](https://img.shields.io/badge/solver-OR--Tools%20CP--SAT-4285F4)
+![LangGraph](https://img.shields.io/badge/orchestration-LangGraph-1C3C3C)
+![Postgres](https://img.shields.io/badge/db-Postgres%20%2F%20Supabase-4169E1?logo=postgresql&logoColor=white)
+![Fly.io](https://img.shields.io/badge/deployed%20on-Fly.io-8B5CF6)
 
-A tool that builds a university service desk's semester work schedule. It collects each worker's weekly availability (filled in directly in the app, or uploaded as the Excel/PDF form), solves the desk's staffing rules with a constraint solver, and gives the desk manager a review screen to adjust, re-solve and approve the result.
+**Builds a university service desk's semester work schedule from staff availability, using a constraint solver and a human-in-the-loop review.**
 
-The manager used to build this schedule by hand from 15–20 individual grids. The tool automates that bulk work and leaves the final adjustments to the manager.
+Every semester, the desk manager used to merge 15–20 individual availability grids into one master schedule by hand, checking a dozen staffing rules along the way. This tool does that bulk work. Workers submit their availability in the app (or send the usual Excel/PDF form), a CP-SAT solver builds a schedule that satisfies every hard rule, and the manager reviews it, adjusts it, and approves it.
+
+It's built for the desk's manager and deployed on Fly.io with a Postgres backend.
+
+## Highlights
+
+- **Optimization, not generation.** The schedule comes from Google OR-Tools' CP-SAT solver, so every hard rule holds by construction. LLMs are used only where the input is messy: reading scanned forms, and grading plain-language explanations in the eval suite.
+- **Human-in-the-loop pipeline.** A LangGraph state graph pauses at three decision points (confirm name matches, complete the roster, review the schedule). Its state is checkpointed to Postgres, so a paused review survives restarts and redeploys.
+- **Edit and re-solve.** The manager can force anyone in or out of any half hour. Each edit becomes a hard constraint and the week is re-solved around it. Edits that would break the schedule are rejected with a specific reason, and the last good schedule stays on screen.
+- **Explains its failures.** When a week can't be staffed, the diagnosis names the slot and the exact reason each person was ruled out, instead of a bare "infeasible".
+- **Evaluated LLM output.** An LLM-as-judge checks those explanations. The model only extracts the claims; plain Python decides whether each one is true, so "accurate" can't be a rubber stamp.
+- **Production safeguards.** Role-based sign-in, row-level security on every table, a guard against two requests advancing the same run, and a test suite that can never reach the real database.
 
 ## How it works
 
-The schedule is produced by a **deterministic solver, not an LLM**. The staffing rules are precise and checkable, and a schedule that silently breaks one is an operational problem. LLMs are used only where the input is messy: reading scanned availability forms, and evaluating plain-language explanations of why a schedule couldn't be built.
-
 ```mermaid
 flowchart LR
-  A[Upload availability<br/>xlsx / pdf] --> B[Parse<br/>openpyxl · pdfplumber<br/>Gemini for scans]
-  W[In-app form<br/>worker ticks a weekly grid] --> S[(Pending submissions)]
+  W[Worker fills in<br/>a weekly grid] --> S[(Pending<br/>submissions)]
+  U[Excel / PDF form] --> P[Parse<br/>openpyxl · pdfplumber<br/>Gemini for scans]
   S -->|manager includes| C
-  B --> C{{Confirm name matches}}
+  P --> C{{Confirm name matches}}
   C --> D{{Roster complete?}}
   D --> E[CP-SAT solve]
-  E -->|feasible| F{{Review: approve / edit / reject}}
+  E -->|feasible| F{{Review}}
   E -->|infeasible| G[Explain the gaps]
-  F -->|edit = lock a slot| E
-  F -->|approve| H[Schedule grid + CSV]
+  F -->|edit = add or remove a lock| E
+  F -->|approve| H[(Saved schedule<br/>grid + CSV)]
 ```
 
-The pipeline is a [LangGraph](https://github.com/langchain-ai/langgraph) state graph. The hexagons are human-in-the-loop gates: the graph pauses with `interrupt()`, its state is saved by a checkpointer, and it resumes when the manager acts in the UI.
+The hexagons are human-in-the-loop gates: the graph pauses with `interrupt()` and resumes when the manager acts in the UI.
 
-- **Two sides, one sign-in.** Shared worker credentials open only the availability form. The manager's credentials open the scheduler. These are shared role passwords rather than user accounts, which fits a single desk. Unset or blank credentials never sign anyone in.
-- **In-app submissions.** Workers fill in a clickable weekly grid with their name, initials and hours. Each one is saved as a pending submission in its own table. The manager chooses which to include in a run, and from there they follow the same path as uploaded files, so nothing reaches the roster without the name-match confirmation.
-- **Ingestion** parses the fixed-layout xlsx template directly. Digital PDFs are rebuilt from word coordinates. Scanned PDFs go to Gemini vision, which must return strict JSON and fails loudly rather than guessing.
-- **Roster.** Submissions create or update roster rows with name, hours and availability. In-app submissions also supply initials, but never overwrite initials the manager already set. The manager fills in the rest: role, experience rating and proximity. Solving is blocked until every row is complete.
-- **Solver.** OR-Tools CP-SAT, with one boolean per person × day × half-hour slot × role. Hard rules are constraints. Weekday coverage is a heavily weighted penalty, so the solver only leaves a gap when nothing else works.
-- **Review loop.** Each manual edit becomes a lock (force a person in or out of a slot at a given time) and the week is re-solved around it. The pipeline keeps only edits that solved: contradictory locks are rejected before solving, and if an edit makes the week infeasible it's dropped and the last good schedule stays on screen. Any edit can be removed again. An approved schedule is saved to the database with the edits it was solved with, so the next import doesn't replace it.
-- **Diagnosis.** When a weekend slot can't be staffed, `diagnose.py` names the slot and the specific reason each person was ruled out.
+1. **Collect availability.** Workers drag across a weekly grid to mark the half hours they can work. Each form becomes a pending submission. Uploaded Excel forms are read from fixed cells, digital PDFs are rebuilt from word coordinates, and scanned PDFs go to Gemini vision, which must return strict JSON or fail loudly.
+2. **Confirm the roster.** Each submission is matched to a roster entry by exact name, and the manager confirms every match. A returning worker's manager-set attributes (role, experience, proximity) are never overwritten by a new submission. Solving is blocked until every roster row is complete.
+3. **Solve.** One boolean per person × day × half-hour slot × role. Hard rules are constraints. Weekday coverage is a heavily weighted penalty, so the solver leaves a gap only when nothing else works. The objective then maximizes fairness: it minimizes the worst-off person's unmet share of their requested hours.
+4. **Review and approve.** The manager sees the schedule grid, each person's hours and any understaffed slots, makes edits, and approves. The approved schedule and the edits it was solved with are saved to the database.
 
 ## Scheduling rules
 
@@ -41,30 +52,55 @@ The pipeline is a [LangGraph](https://github.com/langchain-ai/langgraph) state g
 | 1 | Never schedule anyone above their requested hours (3–20 / week) | hard |
 | 2 | Assistant-only staff never work tech slots · hybrid staff aim for 70/30 or 50/50 assistant/tech | hard · soft |
 | 3 | Only schedule people in slots they marked available | hard |
-| 4 | No two rating-1 (newest) staff together on a weekday slot · weekend shifts spread fairly | hard · soft |
+| 4 | No two of the newest staff together on a weekday slot · weekend shifts spread fairly | hard · soft |
 | 5 | Proximity to campus as a tiebreaker for opens, closes and short blocks | soft |
 | 6 | Proportional fairness: minimize the worst-off person's unmet share of requested hours | soft (objective) |
 | 7 | Blocks of 2–6 hours | hard |
 | — | Weekdays: 2 tech + 2 assistants per slot | soft, heavily penalized |
 | — | Weekends 12:00–17:00: exactly 1 tech | hard |
 
-Rule numbers match the comments in `scheduler/solver/build_model.py`. The hybrid ratios, the weekend cap and proximity aren't in the objective yet (see [Roadmap](#roadmap)).
+Rule numbers match the comments in `scheduler/solver/build_model.py`. The hybrid ratios, proximity and the weekend cap aren't in the objective yet (see [Roadmap](#roadmap)).
+
+## Design decisions
+
+- **A solver, not an LLM, makes the schedule.** The rules are precise and checkable, and a schedule that silently breaks one is an operational problem. The 2,000× weight on coverage shortfall makes the remaining trade-offs explicit and inspectable.
+- **Weekday coverage is soft.** As a hard constraint, a single hard-to-staff slot made the whole week infeasible. Historical schedules show a human scheduler rarely hit full coverage everywhere either.
+- **Edits are locks plus a re-solve.** The manager asked for move/lock/re-solve rather than one-off rule overrides. The pipeline keeps the list of accepted edits itself, so only edits that solved are kept and the UI holds no state.
+- **People are identified by id, never by name.** Two workers can share a name. Results carry each person's name and initials as they were at solve time, so a saved schedule still reads correctly after the roster changes.
+- **Exact name matching with human confirmation.** Every match is reviewed anyway, so fuzzy matching would add risk without saving work.
+- **Availability persists on the roster.** Re-uploading one corrected form doesn't erase everyone else's availability (see `tests/test_roster_availability_persistence.py`).
+- **Every run starts clean.** A new run resets all pipeline state, so one semester's edits can never leak into the next solve. A regression test covers it.
+
+## Tech stack
+
+| Area | Tools |
+|------|-------|
+| Optimization | Google OR-Tools (CP-SAT) |
+| Orchestration | LangGraph, with Postgres / SQLite checkpointing; LangSmith tracing |
+| LLMs | Gemini 2.5 Flash for scanned-form parsing and as an eval judge |
+| Data | SQLAlchemy, Postgres on Supabase (SQLite locally) |
+| Ingestion | openpyxl, pdfplumber |
+| UI | Streamlit, with a custom drag-to-select grid component |
+| Quality | pytest, ruff, GitHub Actions |
+| Deployment | Docker on Fly.io |
 
 ## Project layout
 
 ```
 app.py                  Streamlit UI: sign-in, worker availability form, manager scheduler tabs
 scheduler/
-  db/                   SQLAlchemy roster model, engine setup, CRUD
+  db/                   SQLAlchemy models (roster, submissions, schedules), engine setup, CRUD
   ingest/               xlsx / pdf parsers, Gemini vision fallback, in-app form, name matching
   solver/               CP-SAT model, solve, pre-solve diagnosis, lock validation
-  pipeline/             LangGraph graph and state, run lifecycle and checkpointer, schedule grid formatting
+  pipeline/             LangGraph graph and state, run lifecycle and checkpointer, display tables
   evals/                LLM-as-judge for infeasibility explanations
   ui/                   Drag-to-select availability grid (Streamlit custom component)
 scripts/batch_ingest.py Parse a folder of submissions from the command line
 tests/                  pytest suite
 Dockerfile, fly.toml    Container and Fly.io deployment
 ```
+
+Only `app.py` and `scheduler/ui/` depend on Streamlit. Everything else is framework-free, which keeps the planned frontend change contained.
 
 ## Running locally
 
@@ -76,13 +112,13 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 cp .env.example .env               # then fill in the values below
 
-streamlit run app.py               # http://localhost:8501 (creates the roster table on first run)
+streamlit run app.py               # http://localhost:8501 (creates the tables on first run)
 ```
 
 | Variable | Needed for |
 |----------|------------|
-| `APP_USERNAME`, `APP_PASSWORD` | Shared worker sign-in: opens only the availability form |
-| `ADMIN_APP_USERNAME`, `ADMIN_APP_PASSWORD` | Manager sign-in: opens the scheduler (roster, imports, review, output) |
+| `APP_USERNAME`, `APP_PASSWORD` | Worker sign-in: opens only the availability form |
+| `ADMIN_APP_USERNAME`, `ADMIN_APP_PASSWORD` | Manager sign-in: opens the scheduler |
 | `GEMINI_API_KEY` | Scanned-PDF parsing and the live judge test (optional otherwise) |
 | `DATABASE_URL` | Postgres. Leave empty to use local SQLite (`DATABASE_PATH`, default `roster.db`) |
 | `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | Optional LangSmith tracing of the pipeline |
@@ -101,30 +137,22 @@ pytest -q
 ruff check .
 ```
 
-The suite runs real solves and checks the output against each hard rule. It also covers weekday coverage under shortage, infeasibility diagnosis, the lock/edit/re-solve loop through LangGraph, a regression test for roster availability persistence, and the LLM judge. The judge's accuracy check is plain Python cross-referencing; the one live Gemini test skips when no key is set.
+The suite runs real solves and checks the output against each hard rule. It also covers coverage under shortage, infeasibility diagnosis, the full edit/re-solve/approve loop through LangGraph, run isolation and restart recovery, role-based access, and the LLM judge, whose live Gemini test skips when no key is set. CI runs lint and tests on every push and pull request.
 
-Tests always run against throwaway SQLite databases, for both the roster and the pipeline's checkpoints. `tests/conftest.py` blanks `DATABASE_URL` so a local `.env` can never point the suite at a real database. The Postgres checkpointer test runs only when `TEST_POSTGRES_URL` points at a disposable database. CI runs on every push and pull request to `main`.
+Tests always use throwaway SQLite databases. `tests/conftest.py` blanks `DATABASE_URL` before anything loads `.env`, so the suite can never reach a real database. The Postgres checkpointer and row-level security tests run only when `TEST_POSTGRES_URL` points at a disposable database, for example one started with Docker.
 
 ## Deployment
 
-The app runs as a single Docker container on [Fly.io](https://fly.io), with the roster and the pipeline's checkpoints in [Supabase](https://supabase.com) Postgres, so a paused review survives the machine stopping. The app turns on row-level security for every table it creates, which closes them to Supabase's built-in REST API; the app itself owns the tables, so it isn't affected. Secrets (`DATABASE_URL`, `GEMINI_API_KEY`, `APP_USERNAME`, `APP_PASSWORD`, `ADMIN_APP_USERNAME`, `ADMIN_APP_PASSWORD`, LangSmith keys) are set with `flyctl secrets`. Machines stop when idle and start on the next request.
+The app runs as a single Docker container on [Fly.io](https://fly.io), scaled to zero when idle. The roster, submissions, approved schedules and the pipeline's checkpoints live in [Supabase](https://supabase.com) Postgres. The app turns on row-level security for every table it creates, which closes them to Supabase's built-in REST API; the app owns the tables, so it isn't affected. Secrets are set with `flyctl secrets`.
 
 ```bash
 flyctl deploy
 ```
 
-I chose this stack because I had already run Fly.io and Supabase in production on earlier projects, so deployment was routine plumbing rather than new infrastructure. I considered Streamlit Community Cloud and rejected it because its filesystem doesn't persist across restarts.
-
-## Design decisions
-
-- **Solver over LLM for the schedule.** Every hard rule is guaranteed by construction, and the 2,000× weight on coverage shortfall makes the trade-offs explicit and inspectable.
-- **Weekday coverage is soft.** As a hard constraint, a single hard-to-staff slot made the whole week infeasible. Historical schedules show a human scheduler rarely hit 2+2 everywhere either.
-- **Exact name matching with human confirmation.** Every match is reviewed anyway, so fuzzy matching would add risk without saving work.
-- **Edits are locks plus re-solve.** The manager asked for move/lock/re-solve, not one-off rule overrides.
-- **Availability persists on the roster row.** Re-uploading one corrected form doesn't erase everyone else's availability (see `tests/test_roster_availability_persistence.py`).
-- **People are identified by id, never by name.** Two workers can share a name, so solver output, locks and name-match choices all use roster ids. Results carry each person's name and initials as they were at solve time, so a saved schedule still displays correctly after the roster changes.
+It runs on a single machine on purpose: the guard that stops two requests from advancing the same run works within one process.
 
 ## Roadmap
 
-- Add the hybrid role ratios, proximity and the weekend cap to the objective.
-- Validate the PDF and scanned-PDF paths against more real submissions.
+- **HTMX frontend.** Replace Streamlit with FastAPI, Jinja2 templates and HTMX, keeping `scheduler/` unchanged.
+- **Richer objective.** Add the hybrid role ratios, proximity and the weekend cap.
+- **More real inputs.** Validate the PDF and scanned-PDF paths against more real submissions.
