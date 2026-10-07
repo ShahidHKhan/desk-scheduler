@@ -6,6 +6,7 @@ AvailabilitySubmission shape, so the rest of the app (roster linking,
 solver input) doesn't care which parser produced it.
 """
 
+import re
 from dataclasses import dataclass, field
 
 # The grid is fixed by the master schedule design: 25 half-hour slots,
@@ -63,6 +64,20 @@ def is_available_value(raw_value) -> bool:
         return False
     text = str(raw_value).strip().lower()
     return text not in NON_AVAILABILITY_VALUES
+
+
+def parse_hours(raw_value) -> int | None:
+    """The hours a form asks for, from whatever was typed in its hours
+    box: 20, "20 Hrs.", "~10 Hrs.". A range such as "10-14" or "6/8" reads
+    as its upper end - hours_requested is a ceiling (Rule 1), and the
+    upper end is the most the person said they'd work. None when there's
+    no number at all, as in the template's own "*** Hrs." placeholder."""
+    if isinstance(raw_value, int | float):
+        return int(raw_value)
+    numbers = re.findall(r"\d+(?:\.\d+)?", str(raw_value or ""))
+    if not numbers:
+        return None
+    return int(max(float(n) for n in numbers))
 
 
 def hours_range_warning(hours_requested: int | None) -> str | None:

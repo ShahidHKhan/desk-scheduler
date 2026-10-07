@@ -1,7 +1,8 @@
 """
 The orchestration graph: ingest -> validate -> roster_confirm ->
 roster_completeness_check -> solve -> (diagnose+explain if infeasible,
-otherwise human review) -> output.
+otherwise human review) -> output. From human review, an "add" decision
+goes back to ingest with more submissions; the run's edits carry over.
 
 Run directly to see a full synthetic run, including the interrupt/resume
 cycles at the roster-confirm, roster-completeness, and human-review gates:
@@ -18,6 +19,7 @@ from scheduler.db import crud
 from scheduler.ingest.in_app import to_availability_submission
 from scheduler.ingest.roster_match import match_submissions_to_roster
 from scheduler.ingest.router import ingest
+from scheduler.ingest.schema import hours_range_warning
 from scheduler.pipeline.state import PipelineState
 from scheduler.solver.locks import validate_locks
 from scheduler.solver.model_input import LockedAssignment, Person, SolverInput
@@ -112,10 +114,14 @@ def roster_confirm_node(state: PipelineState) -> dict:
             person_id = candidates[idx].suggested_match_id
 
         submission = candidates[idx].submission
+        # Hours the roster can't hold (say, 25) are left for the boss to
+        # set: written as-is they'd fail the roster's CHECK constraint.
+        # Unset, the completeness check below asks for them instead.
+        hours = submission.hours_requested if hours_range_warning(submission.hours_requested) is None else None
         person = crud.upsert_from_submission(
             person_id,
             submission.name,
-            submission.hours_requested,
+            hours,
             submission.availability,
             initials=submission.initials,
         )
@@ -289,8 +295,8 @@ def human_review_node(state: PipelineState) -> Command:
     # Say so explicitly rather than presenting it as if nothing went wrong.
     if gaps or conflicts:
         message = (
-            "Your last edit could not be applied - still showing your last "
-            "approved-pending schedule. Try a different edit, or approve/reject "
+            "Your last change could not be applied - still showing your last "
+            "approved-pending schedule. Try a different change, or approve/reject "
             "this one as-is."
         )
     elif shortfalls:
@@ -311,10 +317,22 @@ def human_review_node(state: PipelineState) -> Command:
         }
     )
     # Resume with {"decision": "approved"} or {"decision": "rejected"}, or
-    # {"decision": "edit", "add_locks": [...], "remove_locks": [...]}.
+    # {"decision": "edit", "add_locks": [...], "remove_locks": [...]}, or
+    # {"decision": "add", "file_paths": [...], "app_submission_ids": [...]}
+    # for submissions left out of the run.
     review_decision = decision.get("decision", "rejected")
-    update = {"review_decision": review_decision}
-    if review_decision == "edit":
+    # validation_errors is only set here by an "add" with a file that
+    # couldn't be read. It's been shown by now, and left set it would
+    # make solve_node skip every later re-solve.
+    update = {"review_decision": review_decision, "validation_errors": []}
+    if review_decision == "add":
+        # Only the new submissions go through ingest and roster_confirm.
+        # Everyone confirmed earlier in the run keeps the availability
+        # saved on their roster row, which _build_solver_input falls back
+        # to, and locked_assignments is left alone so the edits carry over.
+        update["submission_file_paths"] = decision.get("file_paths", [])
+        update["app_submission_ids"] = decision.get("app_submission_ids", [])
+    elif review_decision == "edit":
         update["proposed_locks"] = _edit_locks(
             state.get("locked_assignments") or [],
             add=[LockedAssignment(**raw) for raw in decision.get("add_locks", [])],
@@ -372,6 +390,8 @@ def _route_after_review(state: PipelineState) -> str:
         return "output"
     if decision == "edit":
         return "solve"
+    if decision == "add":
+        return "ingest"
     return "end"
 
 
@@ -394,7 +414,9 @@ def build_graph(checkpointer):
     graph.add_conditional_edges("solve", _route_after_solve, {"explain": "explain", "human_review": "human_review"})
     graph.add_edge("explain", END)
     graph.add_conditional_edges(
-        "human_review", _route_after_review, {"output": "output", "solve": "solve", "end": END}
+        "human_review",
+        _route_after_review,
+        {"output": "output", "solve": "solve", "ingest": "ingest", "end": END},
     )
     graph.add_edge("output", END)
 

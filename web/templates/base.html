@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Service Desk Scheduler{% endblock %}</title>
-  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/htmx.min.js" defer></script>
-  <script src="/static/grid.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <link rel="icon" href="{{ static_url("icon.svg") }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ static_url("app.css") }}">
+  <script src="{{ static_url("htmx.min.js") }}" defer></script>
+  <script src="{{ static_url("grid.js") }}" defer></script>
+  <script src="{{ static_url("app.js") }}" defer></script>
 </head>
 <body>
   <header class="topbar">

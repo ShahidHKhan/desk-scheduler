@@ -148,3 +148,10 @@ def resume(payload: dict) -> dict:
         if current_state()[1] is None:
             raise NoPausedRun("The pipeline isn't paused, so there's nothing to continue.")
         return graph_app().invoke(Command(resume=payload), CONFIG)
+
+
+def reset() -> None:
+    """Forget the run entirely, paused or finished, so the next
+    current_state() looks like nothing was ever started."""
+    with _run_lock:
+        graph_app().checkpointer.delete_thread(THREAD_ID)

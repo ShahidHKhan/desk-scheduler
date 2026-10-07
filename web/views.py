@@ -24,15 +24,26 @@ ROLE_WEIGHTING_LABELS = {
     "tech_only": "Tech only",
 }
 
-# How the roster's manual fields read on screen.
+# How the roster's required fields read on screen.
 FIELD_LABELS = {
     "role_weighting": "role",
     "experience_rating": "experience rating",
     "proximity": "proximity",
     "initials": "initials",
+    "hours_requested": "hours requested",
 }
 
+
+def static_url(path: str) -> str:
+    """A static file's URL, versioned by when the file last changed.
+    Browsers cache /static files, so without this an edited stylesheet
+    or script keeps loading from the cache."""
+    version = int((STATIC_DIR / path).stat().st_mtime)
+    return f"/static/{path}?v={version}"
+
+
 templates.env.globals.update(
+    static_url=static_url,
     time_label=time_label,
     slot_label=slot_label,
     role_weighting_label=lambda value: ROLE_WEIGHTING_LABELS.get(value, "Role not set"),

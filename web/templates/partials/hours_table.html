@@ -1,0 +1,15 @@
+<div class="table-wrap">
+  <table class="data">
+    <thead><tr><th scope="col">Name</th><th scope="col">Initials</th><th scope="col" class="num">Wanted</th><th scope="col" class="num">Scheduled</th></tr></thead>
+    <tbody>
+      {% for row in hours %}
+      <tr>
+        <td>{{ row["Name"] }}</td>
+        <td>{{ row["Initials"] }}</td>
+        <td class="num">{{ row["Hours requested"] }}</td>
+        <td class="num">{{ "%g"|format(row["Hours assigned"]) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

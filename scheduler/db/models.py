@@ -23,9 +23,13 @@ class Base(DeclarativeBase):
 ROLE_WEIGHTINGS = ("assistant_only", "hybrid_new", "hybrid_2nd", "tech_only")
 
 # The four fields the submitted availability forms never capture - set by
-# the scheduler directly on the roster. A row missing any of these is
-# "incomplete" and blocks solve.
+# the scheduler directly on the roster.
 MANUAL_FIELDS = ("role_weighting", "experience_rating", "proximity", "initials")
+
+# A row missing any of these is "incomplete" and blocks solve: the manual
+# fields, plus hours_requested, which a form normally carries but can't
+# always be read from it.
+REQUIRED_FIELDS = (*MANUAL_FIELDS, "hours_requested")
 
 # Everything crud.update_person() may change. Not id, and not
 # availability_json, which only a confirmed submission writes (see
@@ -34,6 +38,9 @@ EDITABLE_FIELDS = ("name", "hours_requested", *MANUAL_FIELDS)
 
 # Lifecycle of an in-app availability submission (see Submission below).
 SUBMISSION_STATUSES = ("pending", "imported", "dismissed")
+
+# The master schedule's free-text fields (see Setting below).
+SETTING_KEYS = ("semester", "desktop_support")
 
 
 class Roster(Base):
@@ -107,13 +114,13 @@ class Roster(Base):
 
     @property
     def is_complete(self) -> bool:
-        """True only when all four boss-set-manually fields are filled in."""
-        return all(getattr(self, field) is not None for field in MANUAL_FIELDS)
+        """True only when every REQUIRED_FIELDS field is filled in."""
+        return all(getattr(self, field) is not None for field in REQUIRED_FIELDS)
 
     @property
     def missing_fields(self) -> list[str]:
-        """Which of the four manual fields are still unset, if any."""
-        return [field for field in MANUAL_FIELDS if getattr(self, field) is None]
+        """Which REQUIRED_FIELDS are still unset, if any."""
+        return [field for field in REQUIRED_FIELDS if getattr(self, field) is None]
 
     @property
     def availability(self) -> dict[str, list[bool]]:
@@ -208,3 +215,17 @@ class Schedule(Base):
 
     def __repr__(self) -> str:
         return f"Schedule(id={self.id!r}, approved_at={self.approved_at!r})"
+
+
+class Setting(Base):
+    """A value the manager types once and the app keeps, by key: the
+    semester shown on the master schedule and its Desktop Support note
+    (see SETTING_KEYS)."""
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+    def __repr__(self) -> str:
+        return f"Setting(key={self.key!r}, value={self.value!r})"

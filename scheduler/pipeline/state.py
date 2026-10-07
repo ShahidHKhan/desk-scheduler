@@ -45,7 +45,7 @@ class PipelineState(TypedDict, total=False):
     lock_conflicts: list[str]
 
     # --- human review stage ---
-    review_decision: str  # "approved" | "rejected" | "edit" | "" (pending)
+    review_decision: str  # "approved" | "rejected" | "edit" | "add" | "" (pending)
     review_notes: str
 
     # --- output ---

@@ -1,0 +1,79 @@
+{# The schedule laid out like the desk's own master schedule sheet (see
+   format_output.build_master_sheet). 23 columns: time, four boxes for each
+   weekday, one for each weekend day. With `editable`, every box is an input:
+   a changed box goes to /manager/review/box, which re-solves the week, and
+   the semester and Desktop Support text save as they're typed. #}
+{% macro blanks(count) %}{% for _ in range(count) %}<td class="blank"></td>{% endfor %}{% endmacro %}
+<div class="sheet-wrap">
+  <table id="master-sheet" class="sheet"{% if editable %} hx-target="#panel" hx-indicator="#master-sheet, #box-indicator"{% endif %}>
+    <caption class="sr-only">Master schedule: who works each half hour. Assistants are in the shaded boxes, techs in the white ones.</caption>
+    <colgroup>
+      <col class="c-time">
+      {% for day in sheet.days %}{% for _ in range(day.width) %}<col class="{{ 'c-day' if day.width == 1 else 'c-box' }}">{% endfor %}{% endfor %}
+    </colgroup>
+    <thead>
+      <tr>{{ blanks(4) }}<td class="blank title" colspan="10">IT SERVICE DESK</td>{{ blanks(9) }}</tr>
+      <tr>
+        {{ blanks(4) }}
+        <td class="framed" colspan="10">------&nbsp; Master Schedule &nbsp;------</td>
+        {{ blanks(6) }}
+        <td class="framed" colspan="3">
+          {% if editable %}<input class="sheet-input" name="semester" value="{{ settings.semester }}" placeholder="Semester"
+                 maxlength="40" aria-label="Semester" hx-post="/manager/review/notes" hx-swap="none" hx-indicator="this">
+          {% else %}{{ settings.semester }}{% endif %}
+        </td>
+      </tr>
+      <tr>{{ blanks(23) }}</tr>
+      <tr class="day-row">
+        <th scope="col">Time</th>
+        {% for day in sheet.days %}<th scope="colgroup" colspan="{{ day.width }}">{{ day.heading }}</th>{% endfor %}
+      </tr>
+      <tr class="hours-row">
+        <th scope="col">AM-PM</th>
+        {% for day in sheet.days %}<th colspan="{{ day.width }}">{{ day.hours }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in sheet.rows %}
+      <tr{% if row.hour %} class="hour"{% endif %}>
+        <th scope="row" class="time">{{ row.time }}</th>
+        {% for cell in row.cells %}
+        {% if cell.kind == "box" %}
+        <td class="box {{ cell.role }}{% if cell.first %} first{% endif %}{% if cell.last %} last{% endif %}">
+          {%- if editable -%}
+          <input class="sheet-input" name="initials" value="{{ cell.initials }}" maxlength="40" autocomplete="off" spellcheck="false"
+                 aria-label="{{ cell.day }} {{ row.time }}, {{ cell.role }}" hx-post="/manager/review/box"
+                 hx-vals='{{ {"day": cell.day, "slot": cell.slot, "role": cell.role, "was": cell.person_id or ""}|tojson }}'>
+          {%- else %}{{ cell.initials }}{% endif -%}
+        </td>
+        {% elif cell.kind == "closed" %}<td class="closed" colspan="{{ cell.colspan }}">Closed</td>
+        {% elif cell.kind == "before" %}<td class="closed morning" colspan="{{ cell.colspan }}" rowspan="{{ cell.rowspan }}">Closed</td>
+        {% elif cell.kind == "key" %}<td class="key {{ cell.swatch or 'heading' }}" colspan="{{ cell.colspan }}">{{ cell.text }}</td>
+        {% else %}<td class="blank"></td>
+        {% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+      <tr>{{ blanks(23) }}</tr>
+      <tr class="notes-row">
+        {{ blanks(4) }}
+        <td class="note-cell" colspan="8">
+          <div class="note">
+            <p class="note-title">Desktop Support:</p>
+            {% if editable %}<textarea class="sheet-input" name="desktop_support" rows="7" maxlength="1000" aria-label="Desktop Support"
+                      hx-post="/manager/review/notes" hx-swap="none" hx-indicator="this">{{ settings.desktop_support }}</textarea>
+            {% else %}<p class="note-text">{{ settings.desktop_support }}</p>{% endif %}
+          </div>
+        </td>
+        {% for names in sheet.people %}
+        <td class="note-cell" colspan="{{ 7 if loop.first else 3 }}">
+          <ul class="note names">
+            {% for name, initials in names %}<li><span>{{ name }}</span><span>{{ initials }}</span></li>{% endfor %}
+          </ul>
+        </td>
+        {% if loop.first %}<td class="blank"></td>{% endif %}
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+</div>

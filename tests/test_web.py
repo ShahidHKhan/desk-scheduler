@@ -1,12 +1,14 @@
 """
 The web app end to end, through HTTP: a worker submits availability, and
-the manager runs the pipeline, confirms the matches, edits, approves and
-downloads the schedule. Also the roster forms, dismissing submissions,
-file uploads, and full-page versus HTMX responses.
+the manager runs the pipeline, confirms the matches, edits boxes on the
+schedule, approves and downloads it. Also adding a missed submission to a
+run, the roster forms, dismissing submissions, file uploads, and full-page
+versus HTMX responses.
 """
 
 import io
 import json
+import re
 
 import openpyxl
 import pytest
@@ -17,6 +19,7 @@ from scheduler.ingest.in_app import FORM_SLOTS
 from scheduler.ingest.schema import DAYS
 from scheduler.pipeline import runner
 from web.main import app
+from web.routes.manager import FormError, _find_person
 
 HX = {"HX-Request": "true"}
 TECHS = ("Tech1", "Tech2")
@@ -82,6 +85,13 @@ def current_pause() -> dict | None:
     return runner.current_state()[1]
 
 
+def working(day: str, slot: int) -> dict:
+    """Who the schedule under review has in a weekend half hour (one tech)."""
+    assignments = runner.current_state()[0]["solve_result"]["assignments"]
+    [assignment] = [a for a in assignments if (a["day"], a["slot"]) == (day, slot)]
+    return assignment
+
+
 # --- the worker's form ---------------------------------------------------------
 
 
@@ -122,7 +132,7 @@ def test_worker_form_keeps_what_was_typed_when_something_is_wrong(worker, hours,
 
 
 def test_manager_runs_edits_approves_and_downloads(manager):
-    ids = seed_roster()
+    seed_roster()
     submission_ids = [crud.create_submission(name, "XX", 10, weekend_availability()).id for name in TECHS]
 
     page = manager.get("/manager/import", headers=HX)
@@ -135,24 +145,30 @@ def test_manager_runs_edits_approves_and_downloads(manager):
 
     page = manager.post("/manager/import/confirm", data={"action_0": "confirm", "action_1": "confirm"}, headers=HX)
     assert page.headers["HX-Push-Url"] == "/manager/review"
-    assert "Approve" in page.text and "No edits yet" in page.text
+    assert "Approve" in page.text and "IT SERVICE DESK" in page.text and "Your edits" not in page.text
     assert all(s.status == "imported" for s in map(crud.get_submission, submission_ids))
 
-    edit = {"person_id": ids["Tech1"], "day": "Sat", "slot": "10", "role": "tech", "force": "in"}
-    page = manager.post("/manager/review/edit", data=edit, headers=HX)
-    assert "forced into tech on Sat 13:00" in page.text
-    assert len(current_pause()["locks"]) == 1
+    # Type the other tech's initials over whoever has Sat 13:00.
+    there = working("Sat", 10)
+    other = "Tech2" if there["name"] == "Tech1" else "Tech1"
+    box = {"day": "Sat", "slot": "10", "role": "tech", "was": str(there["person_id"]), "initials": "t" + other[-1]}
+    page = manager.post("/manager/review/box", data=box, headers=HX)
+    assert f"{other}</strong> forced into tech on Sat 13:00" in page.text
+    assert f"{there['name']}</strong> forced out of tech on Sat 13:00" in page.text
+    assert working("Sat", 10)["name"] == other
+    assert len(current_pause()["locks"]) == 2
 
     # Tech1 never marked Monday morning: rejected, and the first edit stays.
-    bad = {**edit, "day": "Mon", "slot": "0"}
-    page = manager.post("/manager/review/edit", data=bad, headers=HX)
+    bad = {"day": "Mon", "slot": "0", "role": "tech", "was": "", "initials": "T1"}
+    page = manager.post("/manager/review/box", data=bad, headers=HX)
     assert "Lock for Tech1 on Mon 08:00" in page.text
-    assert len(current_pause()["locks"]) == 1
+    assert len(current_pause()["locks"]) == 2
 
-    remove = {k: edit[k] for k in ("person_id", "day", "slot", "role")}
-    page = manager.post("/manager/review/remove", data=remove, headers=HX)
+    for lock in current_pause()["locks"]:
+        remove = {k: lock[k] for k in ("person_id", "day", "slot", "role")}
+        page = manager.post("/manager/review/remove", data=remove, headers=HX)
     assert current_pause()["locks"] == []
-    assert "No edits yet" in page.text
+    assert "Your edits" not in page.text
 
     page = manager.post("/manager/review/decide", data={"decision": "approved"}, headers=HX)
     assert page.headers["HX-Push-Url"] == "/manager/output"
@@ -181,6 +197,104 @@ def test_running_with_nothing_chosen_says_what_to_do(manager):
     page = manager.post("/manager/import/run", headers=HX)
     assert "Tick at least one submission or choose a file" in page.text
     assert current_pause() is None
+
+
+def test_a_missed_submission_joins_the_run_and_edits_stay(manager):
+    seed_roster()
+    late = crud.add_person("Tech3", "T3", "tech_only", 3, 1, 10)
+    first = [crud.create_submission(name, "XX", 10, weekend_availability()).id for name in TECHS]
+    manager.post("/manager/import/run", data={"include": first}, headers=HX)
+    manager.post("/manager/import/confirm", data={"action_0": "confirm", "action_1": "confirm"}, headers=HX)
+    assert hours_of("Tech3") == 0  # no availability yet
+
+    there = working("Sat", 10)
+    box = {"day": "Sat", "slot": "10", "role": "tech", "was": str(there["person_id"]), "initials": ""}
+    manager.post("/manager/review/box", data=box, headers=HX)
+    edits = current_pause()["locks"]
+    assert edits
+
+    page = manager.get("/manager/import", headers=HX)
+    assert "Missed someone?" in page.text
+
+    [missed] = [crud.create_submission("Tech3", "XX", 10, weekend_availability()).id]
+    page = manager.post("/manager/import/add", data={"include": [missed]}, headers=HX)
+    assert current_pause()["kind"] == "roster_confirm"
+    assert [c["parsed_name"] for c in current_pause()["candidates"]] == ["Tech3"]
+
+    page = manager.post("/manager/import/confirm", data={"action_0": "confirm"}, headers=HX)
+    assert page.headers["HX-Push-Url"] == "/manager/review"
+    assert current_pause()["locks"] == edits
+    assert working("Sat", 10)["person_id"] != there["person_id"]
+    assert hours_of("Tech3") > 0
+    assert crud.get_submission(missed).roster_id == late.id
+
+
+def test_an_unreadable_added_file_keeps_the_schedule_and_later_edits_work(manager):
+    seed_roster()
+    first = [crud.create_submission(name, "XX", 10, weekend_availability()).id for name in TECHS]
+    manager.post("/manager/import/run", data={"include": first}, headers=HX)
+    manager.post("/manager/import/confirm", data={"action_0": "confirm", "action_1": "confirm"}, headers=HX)
+
+    files = [("files", ("broken.xlsx", b"not a workbook", "application/octet-stream"))]
+    page = manager.post("/manager/import/add", files=files, headers=HX)
+    assert page.headers["HX-Push-Url"] == "/manager/review"
+    assert "broken.xlsx" in page.text and "Your last change could not be applied" in page.text
+
+    there = working("Sat", 10)
+    other = "Tech2" if there["name"] == "Tech1" else "Tech1"
+    box = {"day": "Sat", "slot": "10", "role": "tech", "was": str(there["person_id"]), "initials": other}
+    manager.post("/manager/review/box", data=box, headers=HX)
+    assert working("Sat", 10)["name"] == other
+
+
+def test_adding_to_a_run_needs_one_waiting_for_review(manager):
+    [submission_id] = [crud.create_submission("Tech1", "XX", 10, weekend_availability()).id]
+    page = manager.post("/manager/import/add", data={"include": [submission_id]}, headers=HX)
+    assert "only be added while a schedule is waiting for review" in page.text
+    assert current_pause() is None
+
+
+def hours_of(name: str) -> float:
+    [person] = [p for p in current_pause()["people"] if p["name"] == name]
+    return person["hours_assigned"]
+
+
+# --- typing into a box --------------------------------------------------------
+
+PEOPLE = [
+    {"person_id": 1, "name": "Adam Swalha", "initials": "AS"},
+    {"person_id": 2, "name": "Ali Swalha", "initials": "AS"},
+    {"person_id": 3, "name": "Jane Doe", "initials": "JD"},
+    {"person_id": 4, "name": "Jane Roe", "initials": "JR"},
+]
+
+
+@pytest.mark.parametrize(
+    "typed, person_id",
+    [("jd", 3), (" JR ", 4), ("ali swalha", 2), ("Adam", 1)],
+)
+def test_a_box_finds_people_by_initials_or_name(typed, person_id):
+    assert _find_person(typed, PEOPLE)["person_id"] == person_id
+
+
+@pytest.mark.parametrize(
+    "typed, error",
+    [
+        ("as", "AS could be Adam Swalha or Ali Swalha. Type the person's name instead."),
+        ("jane", "More than one person is called jane (Jane Doe, Jane Roe)"),
+        ("ZZ", "Nobody on the roster has the initials or name 'ZZ'."),
+    ],
+)
+def test_a_box_refuses_to_guess(typed, error):
+    with pytest.raises(FormError, match=re.escape(error)):
+        _find_person(typed, PEOPLE)
+
+
+def test_semester_and_desktop_support_are_kept(manager):
+    response = manager.post("/manager/review/notes", data={"semester": " Fall 2026 "}, headers=HX)
+    assert response.status_code == 204
+    manager.post("/manager/review/notes", data={"desktop_support": "Pat Lee  Wed 2-5"}, headers=HX)
+    assert crud.get_settings() == {"semester": "Fall 2026", "desktop_support": "Pat Lee  Wed 2-5"}
 
 
 # --- uploads ------------------------------------------------------------------
@@ -271,6 +385,31 @@ def test_every_tab_renders_as_a_page_and_as_a_panel(manager, tab):
 
     partial = manager.get(f"/manager/{tab}", headers=HX)
     assert partial.status_code == 200 and "<html" not in partial.text
+
+
+def test_reset_is_off_unless_enabled(manager, monkeypatch):
+    monkeypatch.delenv("ENABLE_RESET", raising=False)
+    seed_roster()
+    assert "Reset everything" not in manager.get("/manager/output", headers=HX).text
+    assert manager.post("/manager/reset", headers=HX).status_code == 404
+    assert len(crud.list_roster()) == 2
+
+
+def test_reset_starts_over(manager, monkeypatch):
+    monkeypatch.setenv("ENABLE_RESET", "true")
+    seed_roster()
+    crud.set_setting("semester", "Fall 2026")
+    submission_ids = [crud.create_submission(name, "XX", 10, weekend_availability()).id for name in TECHS]
+    manager.post("/manager/import/run", data={"include": submission_ids}, headers=HX)
+    assert current_pause() is not None
+
+    assert "Reset everything" in manager.get("/manager/output", headers=HX).text
+    page = manager.post("/manager/reset", headers=HX)
+    assert "Everything was reset." in page.text
+    assert page.headers["HX-Push-Url"] == "/manager/import"
+    assert current_pause() is None and runner.current_state()[0] == {}
+    assert crud.list_roster() == [] and crud.list_submissions(None) == []
+    assert crud.get_settings()["semester"] == ""
 
 
 def test_csv_before_any_approval_is_not_found(manager):

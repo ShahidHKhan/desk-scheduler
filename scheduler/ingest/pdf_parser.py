@@ -21,7 +21,14 @@ if a borderline case ever shows up.
 
 from dataclasses import dataclass
 
-from scheduler.ingest.schema import DAYS, TIME_SLOTS, AvailabilitySubmission, hours_range_warning, is_available_value
+from scheduler.ingest.schema import (
+    DAYS,
+    TIME_SLOTS,
+    AvailabilitySubmission,
+    hours_range_warning,
+    is_available_value,
+    parse_hours,
+)
 
 MIN_POSITIONED_WORDS = 20  # see confidence threshold note above
 
@@ -120,9 +127,8 @@ def _reconstruct_grid(path: str, words: list[_PositionedWord]) -> AvailabilitySu
     ]
     hours_text = " ".join(hours_words).strip()
     if hours_text:
-        try:
-            hours_requested = int(float(hours_text))
-        except ValueError:
+        hours_requested = parse_hours(hours_text)
+        if hours_requested is None:
             warnings.append(f"Could not parse hours_requested from header text {hours_text!r}")
         else:
             range_warning = hours_range_warning(hours_requested)

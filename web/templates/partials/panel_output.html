@@ -11,3 +11,14 @@
 <p class="muted">Approved {{ approved }}. This stays the current schedule until you approve another.</p>
 {% include "partials/schedule_view.html" %}
 {% endif %}
+
+{% if reset_enabled %}
+<section class="card">
+  <h2>Start over</h2>
+  <p class="muted">For testing: deletes the roster, every submission, every approved schedule, the semester and Desktop Support text, and any run in progress.</p>
+  <div class="actions">
+    <button class="btn danger" type="button" hx-post="/manager/reset" hx-target="#panel" hx-disabled-elt="this"
+            hx-confirm="Delete everything and start over? This can't be undone.">Reset everything</button>
+  </div>
+</section>
+{% endif %}

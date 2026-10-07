@@ -9,6 +9,7 @@ are plain `def`s, so FastAPI runs them in a worker thread - a solve can
 take up to 30 seconds.
 """
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -22,9 +23,9 @@ from scheduler.db.models import ROLE_WEIGHTINGS
 from scheduler.ingest.in_app import FORM_SLOTS, available_hours
 from scheduler.ingest.schema import HOURS_MAX, HOURS_MIN
 from scheduler.pipeline import runner
-from scheduler.pipeline.format_output import build_hours_table, build_schedule_grid
+from scheduler.pipeline.format_output import build_hours_table, build_master_sheet, build_schedule_grid
 from scheduler.pipeline.graph import REVIEW, ROSTER_CONFIRM
-from scheduler.solver.model_input import DAYS, ROLES, slot_label, time_label
+from scheduler.solver.model_input import DAYS, ROLES, WEEKEND_DAYS, slot_label
 from web.auth import require_admin
 from web.views import is_htmx, local_time, render
 
@@ -77,12 +78,54 @@ def _resume(payload: dict) -> list[tuple[str, str]]:
 
 
 def _schedule_tables(result: dict) -> dict:
-    grid = build_schedule_grid(result)
     return {
-        "grid": {"days": list(grid.columns), "rows": [(time, list(cells)) for time, cells in grid.iterrows()]},
+        "sheet": build_master_sheet(result),
+        "settings": crud.get_settings(),
         "hours": build_hours_table(result).to_dict("records"),
         "shortfalls": result.get("coverage_shortfalls") or [],
     }
+
+
+def _find_person(text: str, people: list[dict]) -> dict:
+    """The person `text` names, out of a solve result's people: by
+    initials, else by full name, else by first name. Two people can share
+    initials (or a first name), so a match has to be the only one."""
+    wanted = text.strip().lower()
+    by_initials = [p for p in people if (p["initials"] or "").lower() == wanted]
+    if len(by_initials) > 1:
+        names = " or ".join(p["name"] for p in by_initials)
+        raise FormError(f"{text.strip().upper()} could be {names}. Type the person's name instead.")
+    matches = (
+        by_initials
+        or [p for p in people if p["name"].lower() == wanted]
+        or [p for p in people if p["name"].split()[0].lower() == wanted]
+    )
+    if len(matches) > 1:
+        names = ", ".join(p["name"] for p in matches)
+        raise FormError(f"More than one person is called {text.strip()} ({names}). Type their initials or full name.")
+    if not matches:
+        raise FormError(f"Nobody on the roster has the initials or name {text.strip()!r}.")
+    return matches[0]
+
+
+def _save_uploads(files: list[UploadFile]) -> list[str]:
+    """Write the uploaded forms to a temporary folder and return their
+    paths. A file input with nothing chosen still sends one empty part,
+    which is skipped."""
+    uploads = [f for f in files if f.filename]
+    bad = [f.filename for f in uploads if Path(f.filename).suffix.lower() not in UPLOAD_SUFFIXES]
+    if bad:
+        raise FormError(f"Only .xlsx and .pdf files can be read: {', '.join(bad)}")
+
+    tmpdir = Path(tempfile.mkdtemp())
+    paths = []
+    for upload in uploads:
+        # The browser supplies the name; keep only its last part so it
+        # can't point outside tmpdir.
+        path = tmpdir / Path(upload.filename).name
+        path.write_bytes(upload.file.read())
+        paths.append(str(path))
+    return paths
 
 
 # --- what each tab shows ----------------------------------------------------
@@ -103,6 +146,26 @@ def roster_context(show_incomplete: bool = False) -> dict:
     }
 
 
+def _pending_context() -> dict:
+    """The in-app submissions waiting to be included in a run."""
+    pending = crud.list_submissions("pending")
+    names = [s.name.lower() for s in pending]
+    return {
+        "pending": [
+            {
+                "id": s.id,
+                "name": s.name,
+                "initials": s.initials,
+                "hours_requested": s.hours_requested,
+                "hours_available": available_hours(s.availability),
+                "submitted": local_time(s.submitted_at),
+            }
+            for s in pending
+        ],
+        "duplicate_names": sorted({s.name for s in pending if names.count(s.name.lower()) > 1}),
+    }
+
+
 def import_context() -> dict:
     values, pause = runner.current_state()
     kind = pause.get("kind") if pause else None
@@ -113,25 +176,15 @@ def import_context() -> dict:
             {**c, "source_name": Path(c.get("source") or "").name} for c in pause["candidates"]
         ]
         context["person_options"] = _person_options()
+    elif kind == REVIEW:
+        # Importing is done, but a forgotten form can still join this run.
+        context.update(_pending_context())
     elif kind is None:
         # A pause checkpointed before payloads had a "kind" lands here too,
         # and starting a new run replaces it.
         if values.get("review_notes") and values.get("solve_result") is None:
             context["failed_notes"] = values["review_notes"]
-        pending = crud.list_submissions("pending")
-        context["pending"] = [
-            {
-                "id": s.id,
-                "name": s.name,
-                "initials": s.initials,
-                "hours_requested": s.hours_requested,
-                "hours_available": available_hours(s.availability),
-                "submitted": local_time(s.submitted_at),
-            }
-            for s in pending
-        ]
-        names = [s.name.lower() for s in pending]
-        context["duplicate_names"] = sorted({s.name for s in pending if names.count(s.name.lower()) > 1})
+        context.update(_pending_context())
     return context
 
 
@@ -155,19 +208,26 @@ def review_context() -> dict:
         "pause": pause,
         "failed": bool(pause["lock_conflicts"] or pause["infeasibility_gaps"]),
         "locks": locks,
-        "person_options": _person_options(),
-        "days": DAYS,
-        "slot_options": [(slot, time_label(slot)) for slot in FORM_SLOTS],
-        "roles": ROLES,
         **_schedule_tables(values["solve_result"]),
     }
+
+
+def reset_enabled() -> bool:
+    """Whether the Output tab offers to wipe everything. Only for testing,
+    so it's off unless ENABLE_RESET=true (see .env.example)."""
+    return os.environ.get("ENABLE_RESET", "").strip().lower() == "true"
 
 
 def output_context() -> dict:
     schedule = crud.latest_schedule()
     if schedule is None:
-        return {"schedule": None}
-    return {"schedule": schedule, "approved": local_time(schedule.approved_at), **_schedule_tables(schedule.result)}
+        return {"schedule": None, "reset_enabled": reset_enabled()}
+    return {
+        "schedule": schedule,
+        "approved": local_time(schedule.approved_at),
+        "reset_enabled": reset_enabled(),
+        **_schedule_tables(schedule.result),
+    }
 
 
 CONTEXT = {"roster": roster_context, "import": import_context, "review": review_context, "output": output_context}
@@ -291,33 +351,48 @@ def delete_person(request: Request, person_id: int, show_incomplete: bool = Form
 # --- import -------------------------------------------------------------------
 
 
+NOTHING_CHOSEN = "Tick at least one submission or choose a file to upload."
+
+
 @router.post("/import/run")
 def run_pipeline(
     request: Request,
     include: list[int] = Form(default=[]),
     files: list[UploadFile] = File(default=[]),
 ):
-    # A file input with nothing chosen still sends one empty part.
-    uploads = [f for f in files if f.filename]
-    bad = [f.filename for f in uploads if Path(f.filename).suffix.lower() not in UPLOAD_SUFFIXES]
-    if bad:
-        message = f"Only .xlsx and .pdf files can be read: {', '.join(bad)}"
-        return panel(request, "import", messages=[("error", message)])
-    if not uploads and not include:
-        message = "Tick at least one submission or choose a file to upload."
-        return panel(request, "import", messages=[("error", message)])
-
-    tmpdir = Path(tempfile.mkdtemp())
-    paths = []
-    for upload in uploads:
-        # The browser supplies the name; keep only its last part so it
-        # can't point outside tmpdir.
-        path = tmpdir / Path(upload.filename).name
-        path.write_bytes(upload.file.read())
-        paths.append(str(path))
+    try:
+        paths = _save_uploads(files)
+        if not paths and not include:
+            raise FormError(NOTHING_CHOSEN)
+    except FormError as e:
+        return panel(request, "import", messages=[("error", str(e))])
 
     runner.start_run(paths, include)
     return panel(request, "import")
+
+
+@router.post("/import/add")
+def add_to_run(
+    request: Request,
+    include: list[int] = Form(default=[]),
+    files: list[UploadFile] = File(default=[]),
+):
+    """Bring more submissions into a run that's waiting for review. They
+    get the same name matching and roster check as the first ones, then
+    the week is solved again, keeping the edits made so far."""
+    _, pause = runner.current_state()
+    if not pause or pause.get("kind") != REVIEW:
+        message = "Submissions can only be added while a schedule is waiting for review."
+        return panel(request, "import", messages=[("error", message)])
+    try:
+        paths = _save_uploads(files)
+        if not paths and not include:
+            raise FormError(NOTHING_CHOSEN)
+    except FormError as e:
+        return panel(request, "import", messages=[("error", str(e))])
+
+    messages = _resume({"decision": "add", "file_paths": paths, "app_submission_ids": include})
+    return _after_resume(request, messages)
 
 
 @router.post("/import/dismiss")
@@ -383,28 +458,70 @@ def decide(request: Request, decision: str = Form("")):
     return panel(request, "review", messages=messages)
 
 
-@router.post("/review/edit")
-def add_edit(
+@router.post("/review/box")
+def edit_box(
     request: Request,
-    person_id: str = Form(""),
     day: str = Form(""),
     slot: str = Form(""),
     role: str = Form(""),
-    force: str = Form("in"),
+    was: str = Form(""),
+    initials: str = Form(""),
 ):
+    """The manager typed into one box of the schedule: a day, half hour
+    and role. Whoever was in it is forced out of that half hour, whoever
+    was typed is forced into the box, and the week is solved again around
+    that."""
+    _, pause = runner.current_state()
+    if not pause or pause.get("kind") != REVIEW:
+        return panel(request, "review")
     try:
         if day not in DAYS or role not in ROLES:
-            raise FormError("Choose a day and a role for the edit.")
-        lock = {
-            "person_id": _int(person_id, "Person", 1, 2**31),
-            "day": day,
-            "slot": _int(slot, "Time", FORM_SLOTS[0], FORM_SLOTS[-1]),
-            "role": role,
-            "value": force == "in",
-        }
+            raise FormError("That box isn't on the schedule.")
+        slot_number = _int(slot, "Time", FORM_SLOTS[0], FORM_SLOTS[-1])
+        typed = _find_person(initials, pause["people"]) if initials.strip() else None
     except FormError as e:
         return panel(request, "review", messages=[("error", str(e))])
-    return panel(request, "review", messages=_resume({"decision": "edit", "add_locks": [lock]}))
+
+    was_id = int(was) if was.isdigit() else None
+    new_id = typed["person_id"] if typed else None
+    if new_id == was_id:
+        return panel(request, "review")
+
+    locks = []
+    if was_id is not None:
+        # Out of both roles: forced out of only this box's role, they
+        # could turn up in the other one in the same half hour.
+        roles = ["tech"] if day in WEEKEND_DAYS else ROLES
+        locks += [{"person_id": was_id, "day": day, "slot": slot_number, "role": r, "value": False} for r in roles]
+    if new_id is not None:
+        locks.append({"person_id": new_id, "day": day, "slot": slot_number, "role": role, "value": True})
+    return panel(request, "review", messages=_resume({"decision": "edit", "add_locks": locks}))
+
+
+@router.post("/reset")
+def reset_everything(request: Request):
+    """Start over from nothing: no run, roster, submissions, approved
+    schedules or settings. For testing the import and roster steps again."""
+    if not reset_enabled():
+        raise HTTPException(status_code=404)
+    runner.reset()
+    crud.delete_everything()
+    return panel(
+        request,
+        "import",
+        messages=[("success", "Everything was reset. Import availability to start again.")],
+        headers={"HX-Push-Url": "/manager/import"},
+    )
+
+
+@router.post("/review/notes")
+def save_notes(semester: str | None = Form(None), desktop_support: str | None = Form(None)):
+    """Save the master schedule's semester or Desktop Support text,
+    whichever the request carries. Nothing on the page needs redrawing."""
+    for key, value in (("semester", semester), ("desktop_support", desktop_support)):
+        if value is not None:
+            crud.set_setting(key, value.strip())
+    return Response(status_code=204)
 
 
 @router.post("/review/remove")

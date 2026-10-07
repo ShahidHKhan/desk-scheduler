@@ -184,19 +184,56 @@ table { border-collapse: collapse; width: 100%; }
 .num { text-align: right !important; font-variant-numeric: tabular-nums; }
 .num.short { color: var(--warn); font-weight: 600; }
 
-/* the schedule grid */
-.schedule-card { padding: 0.75rem; }
-.schedule { min-width: 640px; table-layout: fixed; font: 0.82rem/1.25 var(--mono); }
-.schedule th, .schedule td { padding: 0.3rem 0.4rem; border: 1px solid var(--line); text-align: center; }
-.schedule thead th { font: 600 0.82rem var(--font); background: var(--bg); }
-.schedule tbody th { width: 4.2rem; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; background: var(--bg); }
-.schedule td.closed { background: repeating-linear-gradient(135deg, transparent 0 4px, var(--closed) 4px 6px); }
-.schedule td.gap { background: var(--warn-soft); }
-.legend { display: flex; gap: 1.25rem; flex-wrap: wrap; margin-top: 0.6rem; font-size: 0.8rem; color: var(--muted); }
-.legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
-.swatch { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); display: inline-block; }
-.swatch.closed { background: repeating-linear-gradient(135deg, transparent 0 3px, var(--closed) 3px 5px); }
-.swatch.gap { background: var(--warn-soft); }
+/* the master schedule sheet: drawn like the desk's own Excel sheet, so it
+   keeps the sheet's colours in dark mode too */
+.sheet-wrap { overflow-x: auto; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; color-scheme: light; }
+.sheet {
+  min-width: 980px; table-layout: fixed; border-collapse: collapse; background: #fff; color: #000;
+  font: 13px/1.2 Arial, "Helvetica Neue", Helvetica, sans-serif;
+}
+.sheet col.c-time { width: 7.8%; }
+.sheet col.c-box { width: 3.53%; }
+.sheet col.c-day { width: 10.83%; }
+.sheet th, .sheet td {
+  height: 22px; padding: 0 2px; text-align: center; font-weight: 400;
+  border: 1px solid #000; white-space: nowrap; overflow: hidden;
+}
+.sheet td.blank { border-color: #e0e0e0; }
+.sheet .title { font-size: 24px; font-weight: 700; height: 32px; border-color: transparent; }
+.sheet .framed { font-size: 14px; font-weight: 700; border: 2px solid #000; }
+.sheet .day-row th { font-size: 14px; font-weight: 700; border: 2px solid #000; border-bottom-width: 1px; }
+.sheet .hours-row th { font-size: 11px; font-weight: 700; border: 2px solid #000; border-top-width: 1px; }
+.sheet th.time { background: #fcd5b4; border-left-width: 2px; }
+.sheet tr.hour > :not(.blank) { border-top: 2px solid #000; }
+.sheet td.box { border-left: none; border-right: none; }
+.sheet td.box.first { border-left: 3px double #000; }
+.sheet td.box.last { border-right: 3px double #000; }
+.sheet td.assistant { background: #e4dfec; }
+.sheet td.closed { background: #c0c0c0; font-weight: 700; border: 2px solid #000; }
+.sheet td.closed.morning { vertical-align: bottom; }
+.sheet td.key { border: 1px solid #000; }
+.sheet td.key.heading { border-color: transparent; }
+.sheet .sheet-input {
+  font: inherit; color: inherit; background: transparent; border: 0; border-radius: 0;
+  width: 100%; height: 100%; padding: 0; margin: 0; text-align: center;
+}
+.sheet td.box .sheet-input { text-transform: uppercase; cursor: cell; }
+.sheet .sheet-input:focus { outline: 2px solid #217346; outline-offset: -2px; }
+.sheet .sheet-input::placeholder { color: #8c8c8c; font-weight: 400; }
+.sheet.htmx-request { opacity: 0.6; pointer-events: none; }
+.sheet tr.notes-row > td { height: auto; }
+.sheet td.note-cell { border: none; padding: 0 8px; vertical-align: top; white-space: normal; }
+.sheet .note {
+  min-height: 260px; margin: 0; padding: 8px 12px; border: 1px solid #a6a6a6; background: #fff;
+  font: 15px/1.35 Calibri, Carlito, "Segoe UI", sans-serif; text-align: left;
+}
+.sheet .note-title { font-weight: 700; text-decoration: underline; text-align: center; margin-bottom: 1rem; }
+.sheet .note-text { white-space: pre-wrap; }
+.sheet .note textarea.sheet-input { height: auto; text-align: left; resize: vertical; white-space: pre-wrap; }
+.sheet .names { list-style: none; }
+.sheet .names li { display: flex; justify-content: space-between; gap: 1rem; }
+.hours-details summary { cursor: pointer; font-weight: 600; }
+.hours-details[open] summary { margin-bottom: 0.75rem; }
 .shortfalls ul { columns: 2 16rem; margin: 0.5rem 0 0; padding-left: 1.2rem; font-size: 0.9rem; }
 .shortfalls summary { cursor: pointer; margin-top: 0.5rem; }
 

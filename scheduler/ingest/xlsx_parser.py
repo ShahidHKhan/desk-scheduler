@@ -12,7 +12,14 @@ Cell layout, taken from the blank template every worker fills in:
 
 import openpyxl
 
-from scheduler.ingest.schema import DAYS, TIME_SLOTS, AvailabilitySubmission, hours_range_warning, is_available_value
+from scheduler.ingest.schema import (
+    DAYS,
+    TIME_SLOTS,
+    AvailabilitySubmission,
+    hours_range_warning,
+    is_available_value,
+    parse_hours,
+)
 
 # Column letter that holds each day's availability data (left cell of the merge)
 DAY_COLUMNS = {
@@ -29,12 +36,14 @@ def parse_xlsx(path: str) -> AvailabilitySubmission:
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb.active  # the template only has one sheet ("Semester")
 
-    name = _clean(ws[NAME_CELL].value) or "UNKNOWN"
+    # The template's placeholder is "*** Your Name ***", and people often
+    # type their name between the asterisks.
+    name = _clean(ws[NAME_CELL].value).strip("* ") or "UNKNOWN"
     hours_raw = ws[HOURS_CELL].value
-    hours_requested = _parse_hours(hours_raw)
+    hours_requested = parse_hours(hours_raw)
 
     warnings = []
-    if name == "UNKNOWN" or name.strip("* ").lower() in ("your name", ""):
+    if name == "UNKNOWN" or name.lower() == "your name":
         warnings.append("Name cell looks unfilled (still has placeholder text)")
     if hours_requested is None:
         warnings.append(f"Could not parse hours_requested from {HOURS_CELL!r} = {hours_raw!r}")
@@ -67,15 +76,6 @@ def _clean(value) -> str:
     if value is None:
         return ""
     return str(value).strip()
-
-
-def _parse_hours(value) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(float(value))
-    except (ValueError, TypeError):
-        return None
 
 
 if __name__ == "__main__":
