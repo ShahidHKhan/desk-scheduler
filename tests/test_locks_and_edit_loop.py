@@ -99,6 +99,17 @@ def test_invalid_lock_caught_before_build_model():
     assert not run_solver(data, time_limit_seconds=5)["feasible"]
 
 
+def test_second_evening_tech_lock_caught():
+    tech1, tech2 = make_roster()[:2]
+    locks = [LockedAssignment(p.id, "Tue", 20, "tech", True) for p in (tech1, tech2)]
+    data = SolverInput(people=[tech1, tech2], locked_assignments=locks)
+
+    assert validate_locks(data) == ["Tue 18:00: 2 people forced into the tech role (Tech1, Tech2), but it only takes 1"]
+    # Two in the tech role at 4:00 is fine.
+    data.locked_assignments = [LockedAssignment(p.id, "Tue", 16, "tech", True) for p in (tech1, tech2)]
+    assert validate_locks(data) == []
+
+
 def test_full_edit_resolve_cycle(tmp_path):
     roster = make_roster()
     paths = write_submission_files(roster, tmp_path)

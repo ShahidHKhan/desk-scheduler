@@ -13,10 +13,19 @@ things that design needs to hold up under test:
 """
 
 import re
+from collections import Counter
 
 from helpers import full_week_availability, generous_roster, make_person
 
-from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, WEEKDAYS, SolverInput, slot_label
+from scheduler.solver.model_input import (
+    DAYS,
+    EVENING_DAYS,
+    EVENING_SLOTS,
+    OPERATING_SLOTS,
+    WEEKDAYS,
+    SolverInput,
+    slot_label,
+)
 from scheduler.solver.solve import solve
 
 
@@ -39,6 +48,12 @@ def test_full_weekday_coverage_is_achieved_when_possible():
         f"expected full 2+2 weekday coverage with this much slack in the roster, "
         f"got shortfalls: {result['coverage_shortfalls']}"
     )
+
+    # Mon-Thu evenings take 1 + 1, even with people to spare.
+    per_role = Counter((a["day"], a["slot"], a["role"]) for a in result["assignments"])
+    for day in EVENING_DAYS:
+        for slot in EVENING_SLOTS:
+            assert per_role[day, slot, "assistant"] == per_role[day, slot, "tech"] == 1, slot_label(day, slot)
 
 
 def _availability_minus_one_weekday_slot(day: str, slot: int) -> dict[str, list[bool]]:

@@ -46,6 +46,7 @@
                  hx-vals='{{ {"day": cell.day, "slot": cell.slot, "role": cell.role, "was": cell.person_id or ""}|tojson }}'>
           {%- else %}{{ cell.initials }}{% endif -%}
         </td>
+        {% elif cell.kind == "blocked" %}<td class="box blocked{% if cell.first %} first{% endif %}{% if cell.last %} last{% endif %}"></td>
         {% elif cell.kind == "closed" %}<td class="closed" colspan="{{ cell.colspan }}">Closed</td>
         {% elif cell.kind == "before" %}<td class="closed morning" colspan="{{ cell.colspan }}" rowspan="{{ cell.rowspan }}">Closed</td>
         {% elif cell.kind == "key" %}<td class="key {{ cell.swatch or 'heading' }}" colspan="{{ cell.colspan }}">{{ cell.text }}</td>

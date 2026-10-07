@@ -8,7 +8,15 @@ translation of the rule. Rule numbers below match the README.
 
 from ortools.sat.python import cp_model
 
-from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, ROLES, WEEKDAYS, WEEKEND_DAYS, SolverInput
+from scheduler.solver.model_input import (
+    DAYS,
+    OPERATING_SLOTS,
+    ROLES,
+    WEEKDAYS,
+    WEEKEND_DAYS,
+    SolverInput,
+    role_capacity,
+)
 
 
 def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
@@ -59,35 +67,28 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
                     model.Add(x[p.id, day, slot, "tech"] == 0)
 
     # --- Soft constraint: weekday coverage - target 2 assistant + 2 tech ---
+    # (1 + 1 on Mon-Thu evenings - see model_input.role_capacity)
     # Was a hard "== 2" until real rosters showed it was too rigid: a
     # single understaffed slot (commonly the opening/closing slot, where
     # fewer people mark themselves available) made the ENTIRE schedule
     # infeasible, even when every other slot was fully covered. Now it's
-    # a capped target - `<= 2` still holds (so the solver can't stuff
-    # extra people into a slot just to burn hours), but falling short of
-    # 2 is allowed, at a heavy penalty in the objective below, so the
-    # solver only accepts a shortfall when it truly can't do better.
+    # a capped target - `<= target` still holds (so the solver can't stuff
+    # extra people into a slot just to burn hours), but falling short is
+    # allowed, at a heavy penalty in the objective below, so the solver
+    # only accepts a shortfall when it truly can't do better.
     # Weekend coverage (below) stays hard - the desk must have someone
     # there every weekend slot, no exceptions.
-    WEEKDAY_ASSISTANTS_TARGET = 2
-    WEEKDAY_TECHS_TARGET = 2
     coverage_shortfalls = []  # (role, day, slot, shortfall_var)
     for day in [d for d in DAYS if d in WEEKDAYS]:
         for slot in OPERATING_SLOTS[day]:
-            assistants = [x[p.id, day, slot, "assistant"] for p in people]
-            techs = [x[p.id, day, slot, "tech"] for p in people]
-            model.Add(sum(assistants) <= WEEKDAY_ASSISTANTS_TARGET)
-            model.Add(sum(techs) <= WEEKDAY_TECHS_TARGET)
+            for role in ROLES:
+                target = role_capacity(day, slot, role)
+                in_role = [x[p.id, day, slot, role] for p in people]
+                model.Add(sum(in_role) <= target)
 
-            assistant_shortfall = model.NewIntVar(
-                0, WEEKDAY_ASSISTANTS_TARGET, f"assistant_shortfall_{day}_{slot}"
-            )
-            model.Add(assistant_shortfall >= WEEKDAY_ASSISTANTS_TARGET - sum(assistants))
-            coverage_shortfalls.append(("assistant", day, slot, assistant_shortfall))
-
-            tech_shortfall = model.NewIntVar(0, WEEKDAY_TECHS_TARGET, f"tech_shortfall_{day}_{slot}")
-            model.Add(tech_shortfall >= WEEKDAY_TECHS_TARGET - sum(techs))
-            coverage_shortfalls.append(("tech", day, slot, tech_shortfall))
+                shortfall = model.NewIntVar(0, target, f"{role}_shortfall_{day}_{slot}")
+                model.Add(shortfall >= target - sum(in_role))
+                coverage_shortfalls.append((role, day, slot, shortfall))
 
     # --- Hard constraint: weekend coverage - exactly 1 tech-role person ---
     for day in [d for d in DAYS if d in WEEKEND_DAYS]:

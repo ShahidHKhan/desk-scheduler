@@ -15,11 +15,12 @@ from collections import defaultdict
 import pandas as pd
 
 from scheduler.ingest.schema import TIME_SLOTS
-from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, WEEKEND_DAYS
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, WEEKEND_DAYS, role_capacity
 
 # The boxes each day has on the master schedule sheet, left to right:
 # weekdays two assistant boxes then two tech boxes (the 2 + 2 coverage
-# target), weekends a single tech box.
+# target), weekends a single tech box. A box past its role's capacity at a
+# slot (Mon-Thu evenings' second assistant and tech) is blocked off.
 WEEKDAY_BOXES = ("assistant", "assistant", "tech", "tech")
 WEEKEND_BOXES = ("tech",)
 
@@ -107,7 +108,9 @@ def build_master_sheet(solve_result: dict) -> dict:
       box     - one person position: day, slot, role, person_id, initials
                 (person_id None when nobody's in it); the day's first and
                 last box also carry first/last
-      closed  - the "Closed" bar under a day's last open half hour
+      blocked - a box past its role's capacity at that slot: day, slot,
+                role, and first/last like a box
+      closed - the "Closed" bar under a day's last open half hour
       before  - a weekend's closed morning, as one block (`rowspan` rows)
       blank   - the empty sheet below a day's "Closed" bar
       key     - a line of the colour key
@@ -139,8 +142,9 @@ def build_master_sheet(solve_result: dict) -> dict:
                 boxes = []
                 for role in dict.fromkeys(roles):
                     indexes = [i for i, r in enumerate(roles) if r == role]
+                    width = min(len(indexes), role_capacity(day, slot, role))
                     people = sorted(working[day, slot, role], key=lambda p: p[1])
-                    filled = _fill_boxes(len(indexes), people, [previous[i] for i in indexes])
+                    filled = _fill_boxes(width, people, [previous[i] for i in indexes[:width]])
                     boxes += [
                         {
                             "kind": "box",
@@ -151,6 +155,10 @@ def build_master_sheet(solve_result: dict) -> dict:
                             "initials": person[1] if person else "",
                         }
                         for person in filled
+                    ]
+                    boxes += [
+                        {"kind": "blocked", "day": day, "slot": slot, "role": role, "person_id": None}
+                        for _ in indexes[len(filled) :]
                     ]
                 previous = [box["person_id"] for box in boxes]
                 # Each day is ruled off from the next, as on the sheet.

@@ -135,7 +135,8 @@ def summarize_coverage_shortfalls(solver: cp_model.CpSolver, variables: dict) ->
     understaffed (the soft coverage constraint in build_model.py). Only
     meaningful after a feasible solve - call with the CpSolver used to
     solve the model and the `variables` dict build_model() returned.
-    Empty list means every weekday slot hit its 2+2 target.
+    Empty list means every weekday slot hit its target (2+2, or 1+1 on
+    Mon-Thu evenings).
     """
     messages = []
     for role, day, slot, shortfall_var in variables.get("coverage_shortfalls", []):

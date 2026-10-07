@@ -56,6 +56,20 @@ def test_master_sheet_keeps_each_shift_in_one_column():
     assert boxes(sheet, "Sat", 8) == [""]
 
 
+def test_master_sheet_blocks_off_the_second_evening_assistant_and_tech():
+    assignments = shift(1, "AA", "Mon", range(16, 20)) + shift(2, "BB", "Mon", range(16, 20), role="assistant")
+    sheet = build_master_sheet({"assignments": assignments, "people": RESULT["people"]})
+
+    def kinds(day: str, slot: int) -> list[str]:
+        return [c["kind"] for c in sheet["rows"][slot]["cells"] if c.get("day") == day]
+
+    assert boxes(sheet, "Mon", 17) == ["BB", "", "AA", ""]  # 4:30: still 2 + 2
+    assert boxes(sheet, "Mon", 18) == ["BB", "AA"]  # 5:00: 1 + 1
+    assert kinds("Mon", 18) == ["box", "blocked", "box", "blocked"]
+    assert kinds("Thu", 23) == ["box", "blocked", "box", "blocked"]
+    assert boxes(sheet, "Fri", 17) == ["", "", "", ""]  # Fri closes at 5:00 instead
+
+
 def test_master_sheet_layout():
     sheet = build_master_sheet(RESULT)
     assert [d["hours"] for d in sheet["days"]] == ["8:00-8:00"] * 4 + ["8:00-5:00", "12:00-5:00", "12:00-5:00"]

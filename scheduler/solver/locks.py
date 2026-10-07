@@ -8,7 +8,7 @@ effects, doesn't touch the CP-SAT model - so it's cheap to call before
 deciding whether to solve at all.
 """
 
-from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, ROLES, SolverInput, slot_label
+from scheduler.solver.model_input import DAYS, OPERATING_SLOTS, ROLES, SolverInput, role_capacity, slot_label
 
 
 def validate_locks(data: SolverInput) -> list[str]:
@@ -59,6 +59,24 @@ def validate_locks(data: SolverInput) -> list[str]:
             conflicts.append(
                 f"Lock for {people_by_id[person_id].name} on {slot_label(day, slot)}: forced into "
                 f"multiple roles at once ({', '.join(sorted(roles))})"
+            )
+
+    # Cross-lock: more people forced into a role at a slot than it takes
+    # (e.g. a second tech on a Mon-Thu evening) - mirrors the per-slot
+    # caps in build_model.py.
+    forced_into_role: dict[tuple[str, int, str], set[int]] = {}
+    for (person_id, day, slot), roles in forced_in_roles.items():
+        if slot in OPERATING_SLOTS[day]:
+            for role in roles:
+                forced_into_role.setdefault((day, slot, role), set()).add(person_id)
+
+    for (day, slot, role), person_ids in forced_into_role.items():
+        capacity = role_capacity(day, slot, role)
+        if len(person_ids) > capacity:
+            names = ", ".join(sorted(people_by_id[i].name for i in person_ids))
+            conflicts.append(
+                f"{slot_label(day, slot)}: {len(person_ids)} people forced into the {role} role "
+                f"({names}), but it only takes {capacity}"
             )
 
     return conflicts

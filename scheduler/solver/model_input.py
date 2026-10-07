@@ -35,6 +35,20 @@ OPERATING_SLOTS = {
 WEEKDAYS = {"Mon", "Tue", "Wed", "Thu", "Fri"}
 WEEKEND_DAYS = {"Sat", "Sun"}
 
+# Mon-Thu evenings (5:00-8:00pm) run a lighter crew: 1 assistant + 1 tech
+# instead of the daytime 2 + 2, with the other two boxes blocked off on
+# the sheet.
+EVENING_DAYS = {"Mon", "Tue", "Wed", "Thu"}
+EVENING_SLOTS = range(18, 24)
+
+
+def role_capacity(day: str, slot: int, role: str) -> int:
+    """How many people a role takes at an open slot: the coverage target
+    on weekdays, the exact headcount on weekends."""
+    if day in WEEKEND_DAYS:
+        return 1 if role == "tech" else 0
+    return 1 if day in EVENING_DAYS and slot in EVENING_SLOTS else 2
+
 
 def time_label(slot: int) -> str:
     """The clock time a slot starts at: 4 -> "10:00". Falls back to

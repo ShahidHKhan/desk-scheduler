@@ -209,6 +209,7 @@ table { border-collapse: collapse; width: 100%; }
 .sheet td.box.first { border-left: 3px double #000; }
 .sheet td.box.last { border-right: 3px double #000; }
 .sheet td.assistant { background: #e4dfec; }
+.sheet td.blocked { background: #c0c0c0; }
 .sheet td.closed { background: #c0c0c0; font-weight: 700; border: 2px solid #000; }
 .sheet td.closed.morning { vertical-align: bottom; }
 .sheet td.key { border: 1px solid #000; }
