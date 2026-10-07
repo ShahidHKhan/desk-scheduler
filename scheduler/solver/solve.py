@@ -34,10 +34,12 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
 
     model, variables = build_model(data)
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = time_limit_seconds
-    solver.parameters.num_search_workers = NUM_SEARCH_WORKERS
+    # Pass 1: coverage, then fairness. Gets up to half the time budget,
+    # and hands back whatever it doesn't use.
+    solver = _solver(time_limit_seconds / 2)
     status = solver.Solve(model)
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        solver = _tidy_shifts(model, variables, solver, time_limit_seconds - solver.WallTime())
 
     result = {
         "status": solver.StatusName(status),
@@ -93,6 +95,33 @@ def solve(data: SolverInput, time_limit_seconds: float = 30.0) -> dict:
     result["coverage_shortfalls"] = summarize_coverage_shortfalls(solver, variables)
 
     return result
+
+
+def _solver(time_limit_seconds: float) -> cp_model.CpSolver:
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit_seconds
+    solver.parameters.num_search_workers = NUM_SEARCH_WORKERS
+    return solver
+
+
+def _tidy_shifts(
+    model: cp_model.CpModel, variables: dict, first_pass: cp_model.CpSolver, time_limit_seconds: float
+) -> cp_model.CpSolver:
+    """Pass 2: hold coverage and the worst-off person's hours at what pass
+    1 found, and minimize the shift-shape penalty (role switches, split
+    days, short shifts - see build_model.py) within that. Starts from pass
+    1's schedule, so it can only improve on it; if it finds nothing in
+    time, pass 1's answer stands."""
+    model.Add(variables["total_coverage_shortfall"] <= first_pass.Value(variables["total_coverage_shortfall"]))
+    model.Add(variables["max_shortfall_permille"] <= first_pass.Value(variables["max_shortfall_permille"]))
+    model.ClearHints()
+    for i, value in enumerate(first_pass.ResponseProto().solution):
+        model.AddHint(model.GetIntVarFromProtoIndex(i), value)
+    model.Minimize(variables["shape_penalty"])
+
+    solver = _solver(max(time_limit_seconds, 1.0))
+    status = solver.Solve(model)
+    return solver if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else first_pass
 
 
 if __name__ == "__main__":

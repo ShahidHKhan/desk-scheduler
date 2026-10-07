@@ -6,6 +6,8 @@ phrased per half-hour slot, so booleans keep each constraint a direct
 translation of the rule. Rule numbers below match the README.
 """
 
+from itertools import pairwise
+
 from ortools.sat.python import cp_model
 
 from scheduler.solver.model_input import (
@@ -131,9 +133,11 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
     # forbidden, but tracked in sliver_starts below so the objective can
     # discourage it instead of silently accepting it for free.
     sliver_starts = []
+    starts = {}  # (person_id, day) -> that day's start_vars
     for p in people:
         for day in DAYS:
             slots = list(OPERATING_SLOTS[day])
+            starts[p.id, day] = []
             for idx, s in enumerate(slots):
                 is_first = idx == 0
                 prev_s = None if is_first else slots[idx - 1]
@@ -145,6 +149,7 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
                     # start_var == work[s] AND NOT work[prev_s]
                     model.AddBoolAnd([work[p.id, day, s], work[p.id, day, prev_s].Not()]).OnlyEnforceIf(start_var)
                     model.AddBoolOr([work[p.id, day, s].Not(), work[p.id, day, prev_s]]).OnlyEnforceIf(start_var.Not())
+                starts[p.id, day].append(start_var)
 
                 remaining = len(slots) - idx
                 if remaining >= data.min_block_slots:
@@ -197,11 +202,52 @@ def build_model(data: SolverInput) -> tuple[cp_model.CpModel, dict]:
         + SLIVER_PENALTY_WEIGHT * sum(sliver_starts)
     )
 
+    # --- Shift shape: what makes a schedule read like a human wrote it ---
+    # The objective above is indifferent between a clean 4-hour tech shift
+    # and the same hours flipping tech/assistant every half hour, or split
+    # into two pieces of one day. solve.py runs a second pass that holds
+    # coverage and fairness at the first pass's values and minimizes this,
+    # so a tidier schedule never costs a covered slot or anyone's hours.
+    # All soft: a mid-shift role switch is still allowed when it's the only
+    # way to cover a slot, it just has to earn its place.
+    # Weights only compete with each other, in this order:
+    ROLE_SWITCH_WEIGHT = 50  # tech <-> assistant between back-to-back half hours
+    EXTRA_SHIFT_WEIGHT = 20  # a second (third...) shift for one person on one day
+    SHIFT_START_WEIGHT = 5  # every shift: fewer, longer ones, as on the paper schedule
+
+    role_switches = []
+    for p in people:
+        if not p.can_work_tech():
+            continue  # one role only, so never switches
+        for day in [d for d in DAYS if d in WEEKDAYS]:
+            slots = list(OPERATING_SLOTS[day])
+            for s, next_s in pairwise(slots):
+                switch = model.NewBoolVar(f"switch_{p.id}_{day}_{s}")
+                model.Add(switch >= x[p.id, day, s, "assistant"] + x[p.id, day, next_s, "tech"] - 1)
+                model.Add(switch >= x[p.id, day, s, "tech"] + x[p.id, day, next_s, "assistant"] - 1)
+                role_switches.append(switch)
+
+    extra_shifts = []
+    for (person_id, day), day_starts in starts.items():
+        extra = model.NewIntVar(0, len(day_starts), f"extra_shifts_{person_id}_{day}")
+        model.Add(extra >= sum(day_starts) - 1)
+        extra_shifts.append(extra)
+
+    shape_penalty = (
+        ROLE_SWITCH_WEIGHT * sum(role_switches)
+        + EXTRA_SHIFT_WEIGHT * sum(extra_shifts)
+        + SHIFT_START_WEIGHT * sum(v for day_starts in starts.values() for v in day_starts)
+        + SLIVER_PENALTY_WEIGHT * sum(sliver_starts)
+    )
+
     variables = {
         "x": x,
         "work": work,
         "max_shortfall_permille": max_shortfall_permille,
         "sliver_starts": sliver_starts,
         "coverage_shortfalls": coverage_shortfalls,
+        "total_coverage_shortfall": total_coverage_shortfall,
+        "role_switches": role_switches,
+        "shape_penalty": shape_penalty,
     }
     return model, variables
